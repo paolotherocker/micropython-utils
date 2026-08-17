@@ -17,7 +17,7 @@ No external dependencies are required beyond the MicroPython standard `machine`,
 With your board connected and `mpremote` installed on your host (`pip install mpremote`), install directly from GitHub:
 
 ```bash
-mpremote mip install github:<your-username>/micropython-utils
+mpremote mip install github:paolotherocker/micropython-utils
 ```
 
 This reads the repository's `package.json` and copies every file it lists to `/lib/utils/` on the device's filesystem — no manual file transfer needed.
@@ -25,20 +25,20 @@ This reads the repository's `package.json` and copies every file it lists to `/l
 To pin a specific tagged release instead of the default branch:
 
 ```bash
-mpremote mip install github:<your-username>/micropython-utils@v0.1.0
+mpremote mip install github:paolotherocker/micropython-utils@v0.1.0
 ```
 
 To install to a custom target directory (e.g. if your project doesn't use `/lib`):
 
 ```bash
-mpremote mip install --target /my_libs github:<your-username>/micropython-utils
+mpremote mip install --target /my_libs github:paolotherocker/micropython-utils
 ```
 
 You can also run this from a serial-connected board's own REPL, without a host copy of `mpremote`, using the built-in `mip` module:
 
 ```python
 import mip
-mip.install("github:<your-username>/micropython-utils")
+mip.install("github:paolotherocker/micropython-utils")
 ```
 
 ### Option 2 — Manual copy with `mpremote fs`
@@ -46,7 +46,7 @@ mip.install("github:<your-username>/micropython-utils")
 If you'd rather vendor the source directly into your project (useful for offline builds or version-controlling the library alongside your firmware):
 
 ```bash
-git clone https://github.com/<your-username>/micropython-utils.git
+git clone https://github.com/paolotherocker/micropython-utils.git
 mpremote fs mkdir :/lib
 mpremote fs cp -r micropython-utils/utils :/lib/
 ```
