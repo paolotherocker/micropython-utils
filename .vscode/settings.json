@@ -1,0 +1,22 @@
+{
+    "python.languageServer": "Pylance",
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingModuleSource": "none"
+    },
+    "python.terminal.activateEnvironment": false,
+    "micropico.openOnStart": true,
+    "python.analysis.typeshedPaths": [
+        "~/.micropico-stubs/included",
+        "/Users/paolo/Library/Python/3.10/lib/python/site-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "~/.micropico-stubs/included",
+        "/Users/paolo/Library/Python/3.10/lib/python/site-packages",
+        "${workspaceFolder}/lib/micropython-lib/micropython/usb/usb-device-midi",
+        "${workspaceFolder}/lib/micropython-lib/micropython/drivers/display/ssd1306",
+        "${workspaceFolder}/lib/micropython-tm1637",
+        "${workspaceFolder}/lib/micropython-utils"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}
