@@ -12,59 +12,10 @@ No external dependencies are required beyond the MicroPython standard `machine`,
 
 ## Installation
 
-### Option 1 — `mpremote mip install` (recommended)
-
 With your board connected and `mpremote` installed on your host (`pip install mpremote`), install directly from GitHub:
 
 ```bash
 mpremote mip install github:paolotherocker/micropython-utils
-```
-
-This reads the repository's `package.json` and copies every file it lists to `/lib/utils/` on the device's filesystem — no manual file transfer needed.
-
-To pin a specific tagged release instead of the default branch:
-
-```bash
-mpremote mip install github:paolotherocker/micropython-utils@v0.1.0
-```
-
-To install to a custom target directory (e.g. if your project doesn't use `/lib`):
-
-```bash
-mpremote mip install --target /my_libs github:paolotherocker/micropython-utils
-```
-
-You can also run this from a serial-connected board's own REPL, without a host copy of `mpremote`, using the built-in `mip` module:
-
-```python
-import mip
-mip.install("github:paolotherocker/micropython-utils")
-```
-
-### Option 2 — Manual copy with `mpremote fs`
-
-If you'd rather vendor the source directly into your project (useful for offline builds or version-controlling the library alongside your firmware):
-
-```bash
-git clone https://github.com/paolotherocker/micropython-utils.git
-mpremote fs mkdir :/lib
-mpremote fs cp -r micropython-utils/utils :/lib/
-```
-
-### `package.json` manifest (for reference)
-
-This file lives at the repo root and is what `mip` reads for Option 1. Each entry is `[destination_on_device, source_in_repo]`, both relative to `package.json`'s own location:
-
-```json
-{
-    "urls": [
-        ["utils/__init__.py", "utils/__init__.py"],
-        ["utils/button.py", "utils/button.py"],
-        ["utils/rotary.py", "utils/rotary.py"],
-        ["utils/neopixelmanager.py", "utils/neopixelmanager.py"]
-    ],
-    "version": "0.1.0"
-}
 ```
 
 ## Using the Library in Your Project
