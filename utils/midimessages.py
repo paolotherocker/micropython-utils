@@ -34,13 +34,13 @@ Build and send a Control Change over a USB MIDI interface::
     usb_midi = MIDIInterface()
     usb.device.get().init(usb_midi, builtin_driver=True)
     message = ControlChange(controller=20, value=127, channel=0)
-    usb_midi.send_event(0, message.cin, *message.to_bytes())
+    usb_midi.send_event(0, message.cin(), *message.to_bytes())
 
-`cin` is the USB-MIDI Code Index Number for the message, exposed on every
-concrete `Message` subclass for use with USB-MIDI Event Packet transports.
-Consult the API of your installed `usb.device.midi.MIDIInterface` for the
-exact send method and argument order it expects, since this has varied
-between MicroPython releases.
+`cin()` returns the USB-MIDI Code Index Number for the message, available
+on every concrete `Message` subclass for use with USB-MIDI Event Packet
+transports. Consult the API of your installed `usb.device.midi.MIDIInterface`
+for the exact send method and argument order it expects, since this has
+varied between MicroPython releases.
 """
 
 # ===========================================================================
@@ -83,12 +83,10 @@ class Message:
     """
     Abstract base class for MIDI messages.
 
-    Concrete subclasses implement `to_bytes()` and specify `cin`, the
-    USB-MIDI Code Index Number. Channels are zero-based: channel=0 is
-    MIDI channel 1, and channel=15 is MIDI channel 16.
+    Concrete subclasses implement `to_bytes()` and `cin()`, the latter
+    returning the USB-MIDI Code Index Number. Channels are zero-based:
+    channel=0 is MIDI channel 1, and channel=15 is MIDI channel 16.
     """
-
-    cin = None
 
     def __init__(self, channel: int = 0) -> None:
         self.channel: int = _clamp_channel(channel)
@@ -97,13 +95,16 @@ class Message:
         """Return the raw MIDI bytes as a list of integers."""
         raise NotImplementedError
 
+    def cin(self) -> int:
+        """Return the USB-MIDI Code Index Number for this message."""
+        raise NotImplementedError
+
     def __repr__(self) -> str:
         return "<%s bytes=%s>" % (self.__class__.__name__, list(self.to_bytes()))
 
 
 class NoteOn(Message):
     """MIDI Note On message."""
-    cin: int = _NOTE_ON
 
     def __init__(self, note: int, velocity: int = 127, channel: int = 0) -> None:
         super().__init__(channel)
@@ -113,10 +114,12 @@ class NoteOn(Message):
     def to_bytes(self) -> list:
         return [(_NOTE_ON << 4) | self.channel, self.note, self.velocity]
 
+    def cin(self) -> int:
+        return _NOTE_ON
+
 
 class NoteOff(Message):
     """MIDI Note Off message."""
-    cin: int = _NOTE_OFF
 
     def __init__(self, note: int, velocity: int = 0, channel: int = 0) -> None:
         super().__init__(channel)
@@ -126,10 +129,12 @@ class NoteOff(Message):
     def to_bytes(self) -> list:
         return [(_NOTE_OFF << 4) | self.channel, self.note, self.velocity]
 
+    def cin(self) -> int:
+        return _NOTE_OFF
+
 
 class ControlChange(Message):
     """MIDI Control Change message."""
-    cin: int = _CONTROL_CHANGE
 
     def __init__(self, controller: int, value: int, channel: int = 0) -> None:
         super().__init__(channel)
@@ -139,10 +144,12 @@ class ControlChange(Message):
     def to_bytes(self) -> list:
         return [(_CONTROL_CHANGE << 4) | self.channel, self.controller, self.value]
 
+    def cin(self) -> int:
+        return _CONTROL_CHANGE
+
 
 class ProgramChange(Message):
     """MIDI Program Change message."""
-    cin: int = _PROGRAM_CHANGE
 
     def __init__(self, program: int, channel: int = 0) -> None:
         super().__init__(channel)
@@ -151,10 +158,12 @@ class ProgramChange(Message):
     def to_bytes(self) -> list:
         return [(_PROGRAM_CHANGE << 4) | self.channel, self.program]
 
+    def cin(self) -> int:
+        return _PROGRAM_CHANGE
+
 
 class ChannelAftertouch(Message):
     """MIDI channel pressure (monophonic aftertouch) message."""
-    cin: int = _CHANNEL_AFTERTOUCH
 
     def __init__(self, pressure: int, channel: int = 0) -> None:
         super().__init__(channel)
@@ -163,10 +172,12 @@ class ChannelAftertouch(Message):
     def to_bytes(self) -> list:
         return [(_CHANNEL_AFTERTOUCH << 4) | self.channel, self.pressure]
 
+    def cin(self) -> int:
+        return _CHANNEL_AFTERTOUCH
+
 
 class PolyAftertouch(Message):
     """MIDI polyphonic key-pressure message."""
-    cin: int = _POLY_AFTERTOUCH
 
     def __init__(self, note: int, pressure: int, channel: int = 0) -> None:
         super().__init__(channel)
@@ -176,6 +187,9 @@ class PolyAftertouch(Message):
     def to_bytes(self) -> list:
         return [(_POLY_AFTERTOUCH << 4) | self.channel, self.note, self.pressure]
 
+    def cin(self) -> int:
+        return _POLY_AFTERTOUCH
+
 
 class PitchBend(Message):
     """
@@ -183,7 +197,6 @@ class PitchBend(Message):
 
     `value` ranges from -8192 to 8191. Zero is centre/no bend.
     """
-    cin: int = _PITCH_BEND
 
     def __init__(self, value: int = 0, channel: int = 0) -> None:
         super().__init__(channel)
@@ -199,10 +212,13 @@ class PitchBend(Message):
             (raw >> 7) & 0x7F,
         ]
 
+    def cin(self) -> int:
+        return _PITCH_BEND
+
 
 class SystemRealtime(Message):
     """Base class for single-byte MIDI system realtime messages."""
-    cin: int = 0xF
+
     _STATUS = None
 
     def __init__(self) -> None:
@@ -210,6 +226,9 @@ class SystemRealtime(Message):
 
     def to_bytes(self) -> list:
         return [self._STATUS]
+
+    def cin(self) -> int:
+        return 0xF
 
 
 class Clock(SystemRealtime):
@@ -248,8 +267,13 @@ class SysEx(Message):
 
     `data` is the payload only. Do not include 0xF0 and 0xF7; this class
     adds them when rendering the complete wire-format message.
+
+    SysEx is variable length, so `cin()` does not return a single fixed
+    Code Index Number the way channel voice messages do. Callers using a
+    USB-MIDI Event Packet transport must split `to_bytes()` into 3-byte
+    chunks themselves and select the appropriate start/continue/end CIN
+    (0x4, 0x5, 0x6, or 0x7) per chunk, per the USB MIDI 1.0 specification.
     """
-    cin = None
 
     def __init__(self, data: list) -> None:
         super().__init__(channel=0)
@@ -260,3 +284,6 @@ class SysEx(Message):
 
     def to_bytes(self) -> list:
         return [_SYSEX_START] + self.data + [_SYSEX_END]
+
+    def cin(self) -> None:
+        return None
