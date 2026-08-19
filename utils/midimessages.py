@@ -1,0 +1,289 @@
+"""
+midimessages.py
+================
+
+A MIDI message library for a MicroPython instance.
+
+This module defines a `Message` class hierarchy for standard MIDI
+messages. Each message exposes a `to_bytes()` method that returns the
+raw MIDI bytes as a list of integers, ready to be passed directly to a
+transport of your choice (for example, `usb.device.midi.MIDIInterface`
+or `machine.UART`).
+
+This module does not send messages itself; it only builds them.
+
+Examples
+--------
+
+Build and send a Note On over a `machine.UART` configured for MIDI::
+
+    import machine
+    from midimessages import NoteOn
+
+    uart = machine.UART(1, baudrate=31250,
+                        tx=machine.Pin(4), rx=machine.Pin(5))
+    message = NoteOn(0, note=60, velocity=100)
+    uart.write(bytes(message.to_bytes()))
+
+Build and send a Control Change over a USB MIDI interface::
+
+    import usb.device
+    from usb.device.midi import MIDIInterface
+    from midimessages import ControlChange
+
+    usb_midi = MIDIInterface()
+    usb.device.get().init(usb_midi, builtin_driver=True)
+    message = ControlChange(0, controller=20, value=127)
+    usb_midi.send_event(0, message.cin(), *message.to_bytes())
+
+`cin()` returns the USB-MIDI Code Index Number for the message, available
+on every concrete `Message` subclass for use with USB-MIDI Event Packet
+transports. Consult the API of your installed `usb.device.midi.MIDIInterface`
+for the exact send method and argument order it expects, since this has
+varied between MicroPython releases.
+"""
+
+# ===========================================================================
+# MIDI message classes
+# ===========================================================================
+
+_NOTE_OFF = 0x8
+_NOTE_ON = 0x9
+_POLY_AFTERTOUCH = 0xA
+_CONTROL_CHANGE = 0xB
+_PROGRAM_CHANGE = 0xC
+_CHANNEL_AFTERTOUCH = 0xD
+_PITCH_BEND = 0xE
+
+_SYSEX_START = 0xF0
+_SYSEX_END = 0xF7
+_CLOCK = 0xF8
+_START = 0xFA
+_CONTINUE = 0xFB
+_STOP = 0xFC
+_ACTIVE_SENSING = 0xFE
+_SYSTEM_RESET = 0xFF
+
+
+def _clamp7(value: int, name: str = "value") -> int:
+    """Validate and return a 7-bit MIDI data-byte value."""
+    if not 0 <= value <= 127:
+        raise ValueError("%s must be 0-127, got %r" % (name, value))
+    return value
+
+
+def _clamp_channel(channel: int) -> int:
+    """Validate and return a zero-based MIDI channel number."""
+    if not 0 <= channel <= 15:
+        raise ValueError("channel must be 0-15, got %r" % channel)
+    return channel
+
+
+class Message:
+    """
+    Abstract base class for MIDI messages.
+
+    Concrete subclasses implement `to_bytes()` and `cin()`, the latter
+    returning the USB-MIDI Code Index Number. Channels are zero-based:
+    channel=0 is MIDI channel 1, and channel=15 is MIDI channel 16.
+    """
+
+    def __init__(self, channel: int) -> None:
+        self.channel: int = _clamp_channel(channel)
+
+    def to_bytes(self) -> list:
+        """Return the raw MIDI bytes as a list of integers."""
+        raise NotImplementedError
+
+    def cin(self) -> int:
+        """Return the USB-MIDI Code Index Number for this message."""
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        return "<%s bytes=%s>" % (self.__class__.__name__, list(self.to_bytes()))
+
+
+class NoteOn(Message):
+    """MIDI Note On message."""
+
+    def __init__(self, channel: int, note: int, velocity: int) -> None:
+        super().__init__(channel)
+        self.note: int = _clamp7(note, "note")
+        self.velocity: int = _clamp7(velocity, "velocity")
+
+    def to_bytes(self) -> list:
+        return [(_NOTE_ON << 4) | self.channel, self.note, self.velocity]
+
+    def cin(self) -> int:
+        return _NOTE_ON
+
+
+class NoteOff(Message):
+    """MIDI Note Off message."""
+
+    def __init__(self, channel: int, note: int, velocity: int) -> None:
+        super().__init__(channel)
+        self.note: int = _clamp7(note, "note")
+        self.velocity: int = _clamp7(velocity, "velocity")
+
+    def to_bytes(self) -> list:
+        return [(_NOTE_OFF << 4) | self.channel, self.note, self.velocity]
+
+    def cin(self) -> int:
+        return _NOTE_OFF
+
+
+class ControlChange(Message):
+    """MIDI Control Change message."""
+
+    def __init__(self, channel: int, controller: int, value: int) -> None:
+        super().__init__(channel)
+        self.controller: int = _clamp7(controller, "controller")
+        self.value: int = _clamp7(value, "value")
+
+    def to_bytes(self) -> list:
+        return [(_CONTROL_CHANGE << 4) | self.channel, self.controller, self.value]
+
+    def cin(self) -> int:
+        return _CONTROL_CHANGE
+
+
+class ProgramChange(Message):
+    """MIDI Program Change message."""
+
+    def __init__(self, channel: int, program: int) -> None:
+        super().__init__(channel)
+        self.program: int = _clamp7(program, "program")
+
+    def to_bytes(self) -> list:
+        return [(_PROGRAM_CHANGE << 4) | self.channel, self.program]
+
+    def cin(self) -> int:
+        return _PROGRAM_CHANGE
+
+
+class ChannelAftertouch(Message):
+    """MIDI channel pressure (monophonic aftertouch) message."""
+
+    def __init__(self, channel: int, pressure: int) -> None:
+        super().__init__(channel)
+        self.pressure: int = _clamp7(pressure, "pressure")
+
+    def to_bytes(self) -> list:
+        return [(_CHANNEL_AFTERTOUCH << 4) | self.channel, self.pressure]
+
+    def cin(self) -> int:
+        return _CHANNEL_AFTERTOUCH
+
+
+class PolyAftertouch(Message):
+    """MIDI polyphonic key-pressure message."""
+
+    def __init__(self, channel: int, note: int, pressure: int) -> None:
+        super().__init__(channel)
+        self.note: int = _clamp7(note, "note")
+        self.pressure: int = _clamp7(pressure, "pressure")
+
+    def to_bytes(self) -> list:
+        return [(_POLY_AFTERTOUCH << 4) | self.channel, self.note, self.pressure]
+
+    def cin(self) -> int:
+        return _POLY_AFTERTOUCH
+
+
+class PitchBend(Message):
+    """
+    MIDI 14-bit pitch bend.
+
+    `value` ranges from -8192 to 8191. Zero is centre/no bend.
+    """
+
+    def __init__(self, channel: int, value: int) -> None:
+        super().__init__(channel)
+        if not -8192 <= value <= 8191:
+            raise ValueError("pitch bend value must be -8192..8191")
+        self.value: int = value
+
+    def to_bytes(self) -> list:
+        raw: int = self.value + 8192
+        return [
+            (_PITCH_BEND << 4) | self.channel,
+            raw & 0x7F,
+            (raw >> 7) & 0x7F,
+        ]
+
+    def cin(self) -> int:
+        return _PITCH_BEND
+
+
+class SystemRealtime(Message):
+    """Base class for single-byte MIDI system realtime messages."""
+
+    _STATUS = None
+
+    def __init__(self, channel: int) -> None:
+        super().__init__(channel)
+
+    def to_bytes(self) -> list:
+        return [self._STATUS]
+
+    def cin(self) -> int:
+        return 0xF
+
+
+class Clock(SystemRealtime):
+    """MIDI Timing Clock (0xF8)."""
+    _STATUS: int = _CLOCK
+
+
+class Start(SystemRealtime):
+    """MIDI Start (0xFA)."""
+    _STATUS: int = _START
+
+
+class Continue(SystemRealtime):
+    """MIDI Continue (0xFB)."""
+    _STATUS: int = _CONTINUE
+
+
+class Stop(SystemRealtime):
+    """MIDI Stop (0xFC)."""
+    _STATUS: int = _STOP
+
+
+class ActiveSensing(SystemRealtime):
+    """MIDI Active Sensing (0xFE)."""
+    _STATUS: int = _ACTIVE_SENSING
+
+
+class SystemReset(SystemRealtime):
+    """MIDI System Reset (0xFF)."""
+    _STATUS: int = _SYSTEM_RESET
+
+
+class SysEx(Message):
+    """
+    MIDI System Exclusive message.
+
+    `data` is the payload only. Do not include 0xF0 and 0xF7; this class
+    adds them when rendering the complete wire-format message.
+
+    SysEx is variable length, so `cin()` does not return a single fixed
+    Code Index Number the way channel voice messages do. Callers using a
+    USB-MIDI Event Packet transport must split `to_bytes()` into 3-byte
+    chunks themselves and select the appropriate start/continue/end CIN
+    (0x4, 0x5, 0x6, or 0x7) per chunk, per the USB MIDI 1.0 specification.
+    """
+
+    def __init__(self, channel: int, data: list) -> None:
+        super().__init__(channel)
+        self.data: list = list(data)
+        for byte in self.data:
+            if not 0 <= byte <= 127:
+                raise ValueError("SysEx payload bytes must be 0-127")
+
+    def to_bytes(self) -> list:
+        return [_SYSEX_START] + self.data + [_SYSEX_END]
+
+    def cin(self) -> None:
+        return None
