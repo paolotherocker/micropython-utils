@@ -22,7 +22,7 @@ Build and send a Note On over a `machine.UART` configured for MIDI::
 
     uart = machine.UART(1, baudrate=31250,
                         tx=machine.Pin(4), rx=machine.Pin(5))
-    message = NoteOn(note=60, velocity=100, channel=0)
+    message = NoteOn(0, note=60, velocity=100)
     uart.write(bytes(message.to_bytes()))
 
 Build and send a Control Change over a USB MIDI interface::
@@ -33,7 +33,7 @@ Build and send a Control Change over a USB MIDI interface::
 
     usb_midi = MIDIInterface()
     usb.device.get().init(usb_midi, builtin_driver=True)
-    message = ControlChange(controller=20, value=127, channel=0)
+    message = ControlChange(0, controller=20, value=127)
     usb_midi.send_event(0, message.cin(), *message.to_bytes())
 
 `cin()` returns the USB-MIDI Code Index Number for the message, available
@@ -88,7 +88,7 @@ class Message:
     channel=0 is MIDI channel 1, and channel=15 is MIDI channel 16.
     """
 
-    def __init__(self, channel: int = 0) -> None:
+    def __init__(self, channel: int) -> None:
         self.channel: int = _clamp_channel(channel)
 
     def to_bytes(self) -> list:
@@ -106,7 +106,7 @@ class Message:
 class NoteOn(Message):
     """MIDI Note On message."""
 
-    def __init__(self, note: int, velocity: int = 127, channel: int = 0) -> None:
+    def __init__(self, channel: int, note: int, velocity: int) -> None:
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.velocity: int = _clamp7(velocity, "velocity")
@@ -121,7 +121,7 @@ class NoteOn(Message):
 class NoteOff(Message):
     """MIDI Note Off message."""
 
-    def __init__(self, note: int, velocity: int = 0, channel: int = 0) -> None:
+    def __init__(self, channel: int, note: int, velocity: int) -> None:
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.velocity: int = _clamp7(velocity, "velocity")
@@ -136,7 +136,7 @@ class NoteOff(Message):
 class ControlChange(Message):
     """MIDI Control Change message."""
 
-    def __init__(self, controller: int, value: int, channel: int = 0) -> None:
+    def __init__(self, channel: int, controller: int, value: int) -> None:
         super().__init__(channel)
         self.controller: int = _clamp7(controller, "controller")
         self.value: int = _clamp7(value, "value")
@@ -151,7 +151,7 @@ class ControlChange(Message):
 class ProgramChange(Message):
     """MIDI Program Change message."""
 
-    def __init__(self, program: int, channel: int = 0) -> None:
+    def __init__(self, channel: int, program: int) -> None:
         super().__init__(channel)
         self.program: int = _clamp7(program, "program")
 
@@ -165,7 +165,7 @@ class ProgramChange(Message):
 class ChannelAftertouch(Message):
     """MIDI channel pressure (monophonic aftertouch) message."""
 
-    def __init__(self, pressure: int, channel: int = 0) -> None:
+    def __init__(self, channel: int, pressure: int) -> None:
         super().__init__(channel)
         self.pressure: int = _clamp7(pressure, "pressure")
 
@@ -179,7 +179,7 @@ class ChannelAftertouch(Message):
 class PolyAftertouch(Message):
     """MIDI polyphonic key-pressure message."""
 
-    def __init__(self, note: int, pressure: int, channel: int = 0) -> None:
+    def __init__(self, channel: int, note: int, pressure: int) -> None:
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.pressure: int = _clamp7(pressure, "pressure")
@@ -198,7 +198,7 @@ class PitchBend(Message):
     `value` ranges from -8192 to 8191. Zero is centre/no bend.
     """
 
-    def __init__(self, value: int = 0, channel: int = 0) -> None:
+    def __init__(self, channel: int, value: int) -> None:
         super().__init__(channel)
         if not -8192 <= value <= 8191:
             raise ValueError("pitch bend value must be -8192..8191")
@@ -221,8 +221,8 @@ class SystemRealtime(Message):
 
     _STATUS = None
 
-    def __init__(self) -> None:
-        super().__init__(channel=0)
+    def __init__(self, channel: int) -> None:
+        super().__init__(channel)
 
     def to_bytes(self) -> list:
         return [self._STATUS]
@@ -275,8 +275,8 @@ class SysEx(Message):
     (0x4, 0x5, 0x6, or 0x7) per chunk, per the USB MIDI 1.0 specification.
     """
 
-    def __init__(self, data: list) -> None:
-        super().__init__(channel=0)
+    def __init__(self, channel: int, data: list) -> None:
+        super().__init__(channel)
         self.data: list = list(data)
         for byte in self.data:
             if not 0 <= byte <= 127:
