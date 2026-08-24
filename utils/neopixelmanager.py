@@ -44,6 +44,9 @@ Pattern classes (importable from this module):
              method.
 - Pulse    -> Pulse(color1, color2, period_ms, phase_deg=0): sine-wave
              breathing effect between two colours.
+- Flash    -> Flash(color1, color2=(0, 0, 0), period_ms=200,
+             duty=0.5, repeats=None, phase_deg=0): hard on/off
+             (square-wave) flash of the subset between two colours.
 
 Type hints use only builtin types (int, float, str, bool, tuple, dict, list)
 so no extra imports (e.g. `typing`) are required -- important on MicroPython
@@ -185,6 +188,56 @@ def _interp(color1: tuple, color2: tuple, t: float) -> tuple:
     return tuple(
         int(color1[i] + (color2[i] - color1[i]) * t) for i in range(len(color1))
     )
+
+class Flash(Pattern):
+    """A hard on/off (square-wave) flash between two colours."""
+
+    def __init__(
+        self,
+        color1: tuple,
+        color2: tuple = (0, 0, 0),
+        period_ms: int = 200,
+        duty: float = 0.5,
+        repeats: int = None,
+        phase_deg: float = 0,
+    ) -> None:
+        """
+        Args:
+            color1 (tuple): colour shown during the "on" phase.
+            color2 (tuple, optional): colour shown during the "off"
+                phase. Defaults to black (0, 0, 0), i.e. a classic flash.
+            period_ms (int, optional): full on+off cycle length in
+                milliseconds.
+            duty (float, optional): fraction of `period_ms` spent on
+                `color1` before switching to `color2`, in (0, 1).
+                Defaults to 0.5 (equal on/off time).
+            repeats (int, optional): number of on/off cycles to run.
+                None (default) flashes indefinitely. Once the requested
+                number of cycles has elapsed, the pattern holds on
+                `color2` permanently (call set_pattern() again, e.g.
+                with Off() or Solid(), to change it further).
+            phase_deg (float, optional): optional phase offset in
+                degrees, so multiple subsets can flash out of sync.
+        """
+        self.color1: tuple = tuple(color1)
+        self.color2: tuple = tuple(color2)
+        self.period_ms: int = period_ms
+        self.duty: float = duty
+        self.repeats: int = repeats
+        self.phase_ms: float = (phase_deg / 360.0) * period_ms
+
+    def is_animated(self) -> bool:
+        return True
+
+    def get_color(self, elapsed_ms: int, bpp: int) -> tuple:
+        if self.repeats is not None:
+            total_ms: int = self.repeats * self.period_ms
+            if elapsed_ms >= total_ms:
+                return self.color2
+
+        t: float = (elapsed_ms + self.phase_ms) % self.period_ms
+        on_time: float = self.duty * self.period_ms
+        return self.color1 if t < on_time else self.color2
 
 
 # ----------------------------------------------------------------------
