@@ -52,12 +52,16 @@ Pattern classes (importable from this module):
 - Flash    -> Flash(color1, color2=(0, 0, 0), period_ms=200,
              duty=0.5, repeats=None, phase_deg=0): hard on/off
              (square-wave) flash of the subset between two colours.
-- Wave     -> Wave(color1, color2, period_ms, phase_deg=0): a travelling
-             wave that loops continuously along the subset. At any instant
-             only one pixel is fully at `color2`; pixels either side fade
-             back towards `color1` following a Gaussian falloff, giving a
-             smooth "comet" that runs along the strip and wraps around.
-             Same constructor signature as Pulse, so it's a drop-in
+- Wave     -> Wave(color1, color2, period_ms, phase_deg=0, spread=None):
+             a travelling wave that loops continuously along the subset.
+             The wave's peak position advances smoothly and continuously,
+             giving neighbouring pixels a gradual, gently-blending glow as
+             it approaches and departs -- but whichever single pixel is
+             currently closest to the peak always holds at full color2 for
+             its entire "turn" (rather than only touching full brightness
+             for an instant), so the effect doesn't flicker even with a
+             very tight `spread`. Same constructor signature as Pulse,
+             plus an optional `spread` (in pixels), so it's a drop-in
              alternative wherever Pulse is used.
 
 Type hints use only builtin types (int, float, str, bool, tuple, dict, list)
@@ -92,8 +96,10 @@ Typical usage on a board with NeoPixels on GPIO 4:
     # Static fill on subset 0
     np.set_pattern(Solid((0, 0, 255)), id=id_a)
 
-    # Travelling wave along subset 1
-    np.set_pattern(Wave((255, 0, 0), (0, 0, 0), period_ms=2000), id=id_b)
+    # Travelling wave along subset 1, with a wider-than-default glow
+    np.set_pattern(
+        Wave((255, 0, 0), (0, 0, 0), period_ms=2000, spread=2.5), id=id_b
+    )
 
     # Anything left over (pixels 24-29) can be addressed with id=None
     np.set_pattern(Solid((0, 255, 0)), id=None)
@@ -155,6 +161,9 @@ def _interp(color1: tuple, color2: tuple, t: float, length: int) -> tuple:
     c1: tuple = _normalize_color(color1, length)
     c2: tuple = _normalize_color(color2, length)
     return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(length))
+
+
+_MIN_SPREAD: float = 0.05  # smallest allowed Wave `spread`, in pixels
 
 
 # ----------------------------------------------------------------------
@@ -335,21 +344,33 @@ class Flash(Pattern):
 class Wave(Pattern):
     """A travelling wave that loops continuously along the subset.
 
-    Same constructor signature as Pulse, so it can be used as a drop-in
-    alternative wherever Pulse is used. Behaviourally, though, it is quite
-    different: instead of pulsing every pixel in the subset together
-    between color1 and color2, only *one* pixel at a time sits at color2
-    (the "peak"). Pixels on either side of the peak fade back towards
-    color1 following a Gaussian curve, and the peak's position travels
-    continuously along the subset over time, wrapping back around to the
-    start once it reaches the end -- like a comet or a lighthouse beam
-    circling the strip.
+    Same constructor signature as Pulse (plus an optional `spread`), so it
+    can be used as a drop-in alternative wherever Pulse is used.
+    Behaviourally, though, it is quite different: instead of pulsing every
+    pixel in the subset together between color1 and color2, only *one*
+    pixel at a time -- the current "peak" pixel -- sits at color2. Pixels
+    further away fade back towards color1 following a Gaussian curve
+    centred on the wave's continuously-moving position.
 
-    The width of the Gaussian "glow" around the peak is derived
-    automatically from the subset's length (roughly a sixth of the subset,
-    with a sensible minimum), so the effect looks proportionate whether
-    it's applied to a tiny 4-pixel ring or a long 60-pixel strip, without
-    needing any extra constructor arguments beyond Pulse's own.
+    The wave's underlying peak position advances smoothly and
+    continuously (wrapping back around to the start once it reaches the
+    end, like a comet or a lighthouse beam circling the strip), and every
+    pixel's brightness is normally derived straight from that continuous
+    position -- which is what gives the surrounding glow its smooth,
+    gradual "lighting up" as the wave approaches and "dimming down" as it
+    departs, rather than jumping between discrete positions as a rigid
+    block. The one exception is whichever single pixel is currently
+    closest to the peak: that pixel is always held at full color2 for the
+    entirety of its turn (rather than only touching full brightness for
+    an instant as the continuous peak sweeps past it), which is what
+    keeps the effect from flickering even with a very tight `spread`.
+
+    By default, the width of the Gaussian "glow" around the peak is
+    derived automatically from the subset's length (roughly a sixth of the
+    subset, with a sensible minimum), so the effect looks proportionate
+    whether it's applied to a tiny 4-pixel ring or a long 60-pixel strip.
+    Pass `spread` to override this and fix the glow's width (in pixels)
+    regardless of subset length.
     """
 
     def __init__(
@@ -358,12 +379,13 @@ class Wave(Pattern):
         color2: tuple,
         period_ms: int,
         phase_deg: float = 0,
+        spread: float = None,
     ) -> None:
         """
         Args:
             color1 (tuple): base colour that pixels fade towards away from
                 the wave's peak (equivalent to Pulse's trough colour).
-            color2 (tuple): colour of the single pixel at the wave's peak.
+            color2 (tuple): colour of the current peak pixel.
                 color1 and color2 need not have the same number of
                 channels as each other, or as the strip's bpp -- shorter
                 tuples are zero-padded when rendered.
@@ -372,11 +394,28 @@ class Wave(Pattern):
             phase_deg (float, optional): optional phase offset in degrees,
                 so multiple subsets can run the wave out of sync (or in
                 sync with a Pulse sharing the same period_ms/phase_deg).
+            spread (float, optional): how many pixels either side of the
+                peak the glow noticeably extends over (this is the
+                Gaussian's sigma, expressed directly in pixels rather than
+                as an abstract statistical parameter). Smaller values give
+                a sharper, narrower "comet"; larger values give a broader,
+                softer glow. Defaults to None, which auto-scales the
+                spread to roughly a sixth of the subset's pixel count
+                (with a minimum of 0.6px) -- i.e. the original, fixed
+                behaviour -- so existing code that doesn't pass `spread`
+                is unaffected. Zero, negative, or otherwise degenerately
+                tiny values are silently clamped to a small positive floor
+                (`_MIN_SPREAD`, 0.05px) rather than raising an error or
+                dividing by zero -- the practical effect is the tightest
+                possible single-pixel "point" of light, which (thanks to
+                the peak pixel always holding steady -- see the class
+                docstring) doesn't flicker even at this extreme.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
         self.period_ms: int = period_ms
         self.phase_ms: float = (phase_deg / 360.0) * period_ms
+        self.spread: float = spread
 
     def is_animated(self) -> bool:
         return True
@@ -390,12 +429,33 @@ class Wave(Pattern):
         t: float = ((elapsed_ms + self.phase_ms) / self.period_ms) % 1.0
         peak: float = t * num_pixels
 
-        # Circular distance so the glow wraps smoothly across the
-        # start/end boundary instead of jumping.
+        # Circular distance to the true, continuously-moving peak position
+        # -- this is what gives neighbouring pixels their smooth, gradual
+        # fade in/out as the wave approaches and departs.
         raw_dist: float = abs(pixel_index - peak)
         distance: float = min(raw_dist, num_pixels - raw_dist)
 
-        sigma: float = max(0.6, num_pixels / 6.0)
+        # Whichever pixel is currently closest to the peak is held at
+        # zero distance (i.e. full colour2) for its entire turn, instead
+        # of only touching full brightness for an instant as the
+        # continuous peak sweeps past it. Without this, a small `spread`
+        # would make the peak pixel flicker on and off rather than hold
+        # steady; with it, only this one pixel's distance is overridden --
+        # every other pixel still follows the smooth continuous curve
+        # above, so the wave keeps travelling gradually rather than
+        # jumping as a rigid block.
+        nearest_index: int = int(peak + 0.5) % num_pixels
+        if pixel_index == nearest_index:
+            distance = 0.0
+
+        if self.spread is not None:
+            # Guard against zero/negative/degenerately tiny spreads:
+            # rather than raising or dividing by zero, clamp to a small
+            # positive floor. This still yields a very sharp, almost
+            # single-pixel "point" of light -- just without the crash.
+            sigma: float = max(self.spread, _MIN_SPREAD)
+        else:
+            sigma = max(0.6, num_pixels / 6.0)
         weight: float = math.exp(-(distance * distance) / (2 * sigma * sigma))
 
         return _interp(self.color1, self.color2, weight, bpp)
