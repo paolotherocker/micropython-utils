@@ -1,120 +1,65 @@
-"""A MicroPython class that extends the built-in `neopixel.NeoPixel` driver
-with a *subset-based* API:
+"""MicroPython NeoPixel driver extension with a subset-based API: split a
+strip into independently-addressable pixel groups and apply animated
+Patterns to each group.
 
-- add_subset(length=None) -> pre-register a contiguous block of `length`
-                              pixels (taken from wherever the previous
-                              subset left off). Returns an auto-incrementing
-                              integer id (0, 1, 2, ...) used to address that
-                              block later. If `length` is None, the subset
-                              swallows every pixel not yet claimed by an
-                              earlier subset.
-- set_pattern(pattern, id=None) -> apply a Pattern instance (Solid, Off,
-                              Pulse, Flash, or Wave) to a previously-registered
-                              subset (by id). If `id` is None, targets whatever
-                              pixels are still unclaimed by any subset ("the
-                              rest of the strip"). Re-calling with the same id
-                              replaces that subset's pattern. To stop a
-                              subset's animation and blank it, just call
-                              set_pattern(Off(), id=...) again.
-- clear_patterns()        -> remove all registered patterns (pixels left
-                              as-is).
-- clear()                 -> stop all patterns AND blank every pixel, but
-                              keep the subset structure (ids stay valid).
-- reset()                  -> like clear(), but also forgets the subset
-                              structure -- add_subset() must be called again
-                              from scratch afterwards.
-- update()                 -> recomputes the current colour of every active
-                              (animated) pattern based on elapsed time (does
-                              NOT call write()).
-- poll()                   -> convenience helper: calls update() then
-                              write().
+NeoPixelManager methods:
+- add_subset(length=None) -> register a contiguous block of pixels,
+  returns an id. length=None claims all pixels not yet claimed.
+- set_pattern(pattern, id=None) -> apply a Pattern to a subset (id=None
+  targets pixels not claimed by any subset). Replaces any pattern
+  already on that id.
+- clear_patterns() -> remove all patterns; pixels left as-is.
+- clear() -> clear_patterns() + blank every pixel; subsets stay valid.
+- reset() -> clear() + forget the subset structure entirely.
+- update() -> recompute animated patterns' colours (does not write()).
+- poll() -> update() then write().
 
-Pattern classes (importable from this module):
+Pattern classes:
+- Pattern -> base class; implement get_pixel_color(pixel_index,
+  num_pixels, elapsed_ms, bpp).
+- Solid(color) -> static colour.
+- Off() -> blanks the subset (all channels zero).
+- Pulse(color1, color2, period_ms, phase_deg=0) -> sine-wave breathing
+  pulse between two colours.
+- Flash(color1, color2=(0, 0, 0), period_ms=200, duty=0.5, repeats=None,
+  phase_deg=0) -> square-wave on/off flash.
+- Wave(color1, color2, period_ms, phase_deg=0, spread=None) -> a
+  Gaussian "comet" that travels along the subset in a loop.
 
-- Pattern  -> abstract base class. Subclass this to add new effects. Must
-             implement `get_pixel_color(self, pixel_index, num_pixels,
-             elapsed_ms, bpp)` returning a colour tuple for a single pixel
-             within the subset, and may override `is_animated()` (default
-             False) to tell the manager whether `update()` needs to keep
-             recomputing it every poll, or whether it only needs to be
-             rendered once when set. Patterns that colour every pixel the
-             same (e.g. Solid, Pulse) simply ignore `pixel_index` and
-             `num_pixels` and return the same colour regardless. Patterns
-             that need a different colour per pixel (e.g. a travelling
-             wave) use `pixel_index`/`num_pixels` to vary the result.
-- Solid    -> Solid(color): fills the subset with a single static colour.
-- Off      -> Off(): blanks the subset (all channels zero). Also serves as
-             the way to "remove" a pattern from a subset -- just set an
-             Off() pattern on it instead of calling a separate remove
-             method.
-- Pulse    -> Pulse(color1, color2, period_ms, phase_deg=0): sine-wave
-             breathing effect between two colours.
-- Flash    -> Flash(color1, color2=(0, 0, 0), period_ms=200,
-             duty=0.5, repeats=None, phase_deg=0): hard on/off
-             (square-wave) flash of the subset between two colours.
-- Wave     -> Wave(color1, color2, period_ms, phase_deg=0, spread=None):
-             a travelling wave that loops continuously along the subset.
-             The wave's peak position advances smoothly and continuously,
-             giving neighbouring pixels a gradual, gently-blending glow as
-             it approaches and departs -- but whichever single pixel is
-             currently closest to the peak always holds at full color2 for
-             its entire "turn" (rather than only touching full brightness
-             for an instant), so the effect doesn't flicker even with a
-             very tight `spread`. Same constructor signature as Pulse,
-             plus an optional `spread` (in pixels), so it's a drop-in
-             alternative wherever Pulse is used.
+Colour tuples are plain (r, g, b) or (r, g, b, w) tuples. Mismatched
+lengths (e.g. RGB vs RGBW) are padded with zeros or truncated
+automatically -- see `_normalize_color()`.
 
-Type hints use only builtin types (int, float, str, bool, tuple, dict, list)
-so no extra imports (e.g. `typing`) are required -- important on MicroPython
-where the `typing` module is usually unavailable and generic subscripting
-such as `tuple[int, int]` is not supported on the class objects themselves.
-Where a value may legitimately be `None` (e.g. an un-set default), that is
-called out in the docstring rather than via `Optional[...]`.
+Type hints use only builtin types since MicroPython has no `typing`
+module and doesn't support subscripting builtin generics.
 
-Colour tuples are plain (r, g, b) or (r, g, b, w) tuples -- there is no
-dedicated colour type. Any colour a pattern is given, or any two colours a
-pattern blends together (e.g. Pulse/Wave's color1/color2), are automatically
-padded with trailing zeros (or truncated) to match the strip's `bpp` before
-they are combined or written. This means you can freely mix RGB and RGBW
-tuples when constructing patterns -- e.g. Pulse((255, 0, 0), (0, 0, 0, 255))
--- without raising an error; the shorter tuple's missing channel(s) are
-simply treated as 0 (off). See `_normalize_color()` below.
-
-Typical usage on a board with NeoPixels on GPIO 4:
+Example, NeoPixels on GPIO 4:
 
     from machine import Pin
     from neopixelmanager import NeoPixelManager, Solid, Off, Pulse, Wave
     import time
 
-    np = NeoPixelManager(Pin(4), 30)  # 30 pixel strip
+    np = NeoPixelManager(Pin(4), 30)
     np.reset()
 
-    # Pre-declare two subsets: first 8 pixels, next 16 pixels.
-    id_a = np.add_subset(8)   # id_a == 0, covers pixels 0-7
-    id_b = np.add_subset(16)  # id_b == 1, covers pixels 8-23
+    id_a = np.add_subset(8)   # pixels 0-7
+    id_b = np.add_subset(16)  # pixels 8-23
 
-    # Static fill on subset 0
     np.set_pattern(Solid((0, 0, 255)), id=id_a)
-
-    # Travelling wave along subset 1, with a wider-than-default glow
     np.set_pattern(
         Wave((255, 0, 0), (0, 0, 0), period_ms=2000, spread=2.5), id=id_b
     )
-
-    # Anything left over (pixels 24-29) can be addressed with id=None
-    np.set_pattern(Solid((0, 255, 0)), id=None)
+    np.set_pattern(Solid((0, 255, 0)), id=None)  # pixels 24-29
 
     np.write()
 
     while True:
-        np.poll()  # updates animated patterns and pushes to the strip
+        np.poll()
         time.sleep_ms(20)
 
-    # Turn subset 1 off (no separate "remove" call needed)
     np.set_pattern(Off(), id=id_b)
-
-    np.clear()  # stop patterns + blank strip, subsets 0 and 1 still valid
-    np.reset()  # stop patterns + blank strip + forget subsets entirely
+    np.clear()  # subsets 0 and 1 still valid
+    np.reset()  # subsets forgotten too
 """
 
 import time
@@ -129,19 +74,9 @@ from machine import Pin
 def _normalize_color(color: tuple, length: int) -> tuple:
     """Pad or truncate a colour tuple to exactly `length` channels.
 
-    Missing trailing channels (e.g. a 3-tuple RGB colour used where a
-    4-channel RGBW value is expected) are filled with 0. Extra channels
-    (e.g. a 4-tuple RGBW colour used where only 3 channels are expected)
-    are simply dropped. This lets callers freely mix RGB and RGBW colour
-    tuples across a pattern's arguments, or against a strip configured
-    with a different `bpp`, without raising an error.
-
-    Args:
-        color (tuple): the colour tuple to normalise.
-        length (int): the number of channels the result must have.
-
-    Returns:
-        tuple: a colour tuple with exactly `length` channels.
+    Missing trailing channels are filled with 0; extra channels are
+    dropped. Lets callers freely mix RGB/RGBW tuples with each other or
+    with a strip of a different `bpp`.
     """
     n: int = len(color)
     if n == length:
@@ -154,9 +89,8 @@ def _normalize_color(color: tuple, length: int) -> tuple:
 def _interp(color1: tuple, color2: tuple, t: float, length: int) -> tuple:
     """Linearly interpolate between two colours at fraction t in [0, 1].
 
-    Both colours are normalised to `length` channels first (see
-    `_normalize_color()`), so color1 and color2 need not be the same
-    length as each other, or match `length`, for this to work safely.
+    Both colours are normalised to `length` channels first, so color1 and
+    color2 need not match each other's length or `length`.
     """
     c1: tuple = _normalize_color(color1, length)
     c2: tuple = _normalize_color(color2, length)
@@ -170,18 +104,12 @@ _MIN_SPREAD: float = 0.05  # smallest allowed Wave `spread`, in pixels
 # Pattern classes
 # ----------------------------------------------------------------------
 class Pattern:
-    """Abstract base class for a pixel pattern applied to a subset.
+    """Base class for a colour pattern applied to a subset of pixels.
 
-    Subclass and implement `get_pixel_color()` to add new effect types.
-    Override `is_animated()` to return True if the pattern needs to be
-    recomputed on every `update()` call (e.g. anything time-based); static
-    patterns only need to be rendered once when `set_pattern()` is called.
-
-    Every pattern -- whether it paints the whole subset one flat colour
-    (Solid, Pulse, Flash, ...) or a different colour per pixel (Wave) --
-    is asked for its colour one pixel at a time via `get_pixel_color()`.
-    Flat patterns simply ignore `pixel_index`/`num_pixels` and return the
-    same colour regardless of which pixel is being asked about.
+    Subclass and implement `get_pixel_color()`. Override `is_animated()`
+    to return True if the pattern must be recomputed on every `update()`
+    (e.g. anything time-based); static patterns are only rendered once,
+    when `set_pattern()` is called.
     """
 
     def is_animated(self) -> bool:
@@ -191,24 +119,16 @@ class Pattern:
     def get_pixel_color(
         self, pixel_index: int, num_pixels: int, elapsed_ms: int, bpp: int
     ) -> tuple:
-        """Return the colour tuple for a single pixel within the subset.
-
-        Called once per pixel in the subset on every render pass. The
-        returned tuple must have exactly `bpp` channels -- implementations
-        should route any colour(s) they hold through `_normalize_color()`
-        (directly, or via `_interp()`) before returning, so mismatched
-        RGB/RGBW inputs never reach the underlying strip buffer.
+        """Return the colour for one pixel in the subset.
 
         Args:
-            pixel_index (int): position of this pixel within the subset,
-                0-indexed from the start of the subset (not the strip).
-                Patterns that colour every pixel the same can ignore this.
+            pixel_index (int): 0-indexed position within the subset (not
+                the strip). Patterns that colour every pixel the same can
+                ignore this.
             num_pixels (int): total number of pixels in the subset.
-                Patterns that colour every pixel the same can ignore this.
-            elapsed_ms (int): milliseconds elapsed since this pattern was
-                attached via set_pattern().
-            bpp (int): bytes-per-pixel of the strip (3 = RGB, 4 = RGBW),
-                so the pattern can size its colour tuple correctly.
+            elapsed_ms (int): milliseconds since set_pattern() was called.
+            bpp (int): 3 for RGB, 4 for RGBW; the returned tuple must have
+                this many channels (see `_normalize_color()`).
         """
         raise NotImplementedError
 
@@ -219,10 +139,7 @@ class Solid(Pattern):
     def __init__(self, color: tuple) -> None:
         """
         Args:
-            color (tuple): tuple matching the strip's bpp, e.g. (r, g, b).
-                A tuple with a different length than the strip's bpp is
-                accepted too -- it is padded with 0s or truncated to fit
-                when rendered.
+            color (tuple): colour tuple, e.g. (r, g, b).
         """
         self.color: tuple = tuple(color)
 
@@ -235,9 +152,8 @@ class Solid(Pattern):
 class Off(Pattern):
     """Blanks the subset (all channels zero).
 
-    Setting this pattern on a subset is also the way to stop/forget
-    whatever pattern was previously running there -- there is no separate
-    "remove" call.
+    Also the way to stop/forget whatever pattern was previously running
+    on a subset -- there is no separate "remove" call.
     """
 
     def get_pixel_color(
@@ -258,15 +174,11 @@ class Pulse(Pattern):
     ) -> None:
         """
         Args:
-            color1 (tuple): colour at the trough of the sine wave (t = 0).
-            color2 (tuple): colour at the peak of the sine wave (t = 1).
-                color1 and color2 need not have the same number of
-                channels as each other, or as the strip's bpp -- shorter
-                tuples are zero-padded when rendered.
-            period_ms (int): full pulse period in milliseconds (one
-                complete color1 -> color2 -> color1 cycle).
-            phase_deg (float, optional): optional phase offset in degrees,
-                so multiple pulses can be started out of sync.
+            color1 (tuple): colour at the trough (t = 0).
+            color2 (tuple): colour at the peak (t = 1).
+            period_ms (int): full color1 -> color2 -> color1 cycle length.
+            phase_deg (float, optional): phase offset in degrees, so
+                multiple pulses can run out of sync.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -298,24 +210,18 @@ class Flash(Pattern):
     ) -> None:
         """
         Args:
-            color1 (tuple): colour shown during the "on" phase.
-            color2 (tuple, optional): colour shown during the "off"
-                phase. Defaults to black (0, 0, 0), i.e. a classic flash.
-                color1 and color2 need not have the same number of
-                channels as each other, or as the strip's bpp -- shorter
-                tuples are zero-padded when rendered.
-            period_ms (int, optional): full on+off cycle length in
-                milliseconds.
+            color1 (tuple): colour during the "on" phase.
+            color2 (tuple, optional): colour during the "off" phase.
+                Defaults to black.
+            period_ms (int, optional): full on+off cycle length.
             duty (float, optional): fraction of `period_ms` spent on
-                `color1` before switching to `color2`, in (0, 1).
-                Defaults to 0.5 (equal on/off time).
+                `color1`, in (0, 1). Defaults to 0.5.
             repeats (int, optional): number of on/off cycles to run.
-                None (default) flashes indefinitely. Once the requested
-                number of cycles has elapsed, the pattern holds on
-                `color2` permanently (call set_pattern() again, e.g.
-                with Off() or Solid(), to change it further).
-            phase_deg (float, optional): optional phase offset in
-                degrees, so multiple subsets can flash out of sync.
+                None (default) flashes indefinitely; once exhausted, the
+                pattern holds on `color2` (call set_pattern() again to
+                change it).
+            phase_deg (float, optional): phase offset in degrees, so
+                multiple subsets can flash out of sync.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -342,35 +248,13 @@ class Flash(Pattern):
 
 
 class Wave(Pattern):
-    """A travelling wave that loops continuously along the subset.
+    """A Gaussian "comet" that travels along the subset in a loop.
 
-    Same constructor signature as Pulse (plus an optional `spread`), so it
-    can be used as a drop-in alternative wherever Pulse is used.
-    Behaviourally, though, it is quite different: instead of pulsing every
-    pixel in the subset together between color1 and color2, only *one*
-    pixel at a time -- the current "peak" pixel -- sits at color2. Pixels
-    further away fade back towards color1 following a Gaussian curve
-    centred on the wave's continuously-moving position.
-
-    The wave's underlying peak position advances smoothly and
-    continuously (wrapping back around to the start once it reaches the
-    end, like a comet or a lighthouse beam circling the strip), and every
-    pixel's brightness is normally derived straight from that continuous
-    position -- which is what gives the surrounding glow its smooth,
-    gradual "lighting up" as the wave approaches and "dimming down" as it
-    departs, rather than jumping between discrete positions as a rigid
-    block. The one exception is whichever single pixel is currently
-    closest to the peak: that pixel is always held at full color2 for the
-    entirety of its turn (rather than only touching full brightness for
-    an instant as the continuous peak sweeps past it), which is what
-    keeps the effect from flickering even with a very tight `spread`.
-
-    By default, the width of the Gaussian "glow" around the peak is
-    derived automatically from the subset's length (roughly a sixth of the
-    subset, with a sensible minimum), so the effect looks proportionate
-    whether it's applied to a tiny 4-pixel ring or a long 60-pixel strip.
-    Pass `spread` to override this and fix the glow's width (in pixels)
-    regardless of subset length.
+    Same constructor as Pulse, plus `spread`. Only one pixel -- the
+    current peak -- is fully at color2; pixels either side fade towards
+    color1 following a Gaussian curve, and the peak position advances
+    continuously along the subset, wrapping back to the start once it
+    reaches the end.
     """
 
     def __init__(
@@ -383,33 +267,18 @@ class Wave(Pattern):
     ) -> None:
         """
         Args:
-            color1 (tuple): base colour that pixels fade towards away from
-                the wave's peak (equivalent to Pulse's trough colour).
+            color1 (tuple): colour pixels fade towards, away from the peak.
             color2 (tuple): colour of the current peak pixel.
-                color1 and color2 need not have the same number of
-                channels as each other, or as the strip's bpp -- shorter
-                tuples are zero-padded when rendered.
-            period_ms (int): time in milliseconds for the peak to complete
-                one full pass along the subset and wrap back to the start.
-            phase_deg (float, optional): optional phase offset in degrees,
-                so multiple subsets can run the wave out of sync (or in
-                sync with a Pulse sharing the same period_ms/phase_deg).
+            period_ms (int): time for the peak to complete one full pass
+                along the subset and wrap back to the start.
+            phase_deg (float, optional): phase offset in degrees, so
+                multiple subsets can run the wave out of sync.
             spread (float, optional): how many pixels either side of the
-                peak the glow noticeably extends over (this is the
-                Gaussian's sigma, expressed directly in pixels rather than
-                as an abstract statistical parameter). Smaller values give
-                a sharper, narrower "comet"; larger values give a broader,
-                softer glow. Defaults to None, which auto-scales the
-                spread to roughly a sixth of the subset's pixel count
-                (with a minimum of 0.6px) -- i.e. the original, fixed
-                behaviour -- so existing code that doesn't pass `spread`
-                is unaffected. Zero, negative, or otherwise degenerately
-                tiny values are silently clamped to a small positive floor
-                (`_MIN_SPREAD`, 0.05px) rather than raising an error or
-                dividing by zero -- the practical effect is the tightest
-                possible single-pixel "point" of light, which (thanks to
-                the peak pixel always holding steady -- see the class
-                docstring) doesn't flicker even at this extreme.
+                peak the glow extends over (the Gaussian sigma, in
+                pixels). Defaults to None, auto-scaling to roughly a
+                sixth of the subset's pixel count (min 0.6px). Values
+                <= 0 are clamped to a small positive floor (`_MIN_SPREAD`)
+                rather than raising an error or dividing by zero.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -429,31 +298,21 @@ class Wave(Pattern):
         t: float = ((elapsed_ms + self.phase_ms) / self.period_ms) % 1.0
         peak: float = t * num_pixels
 
-        # Circular distance to the true, continuously-moving peak position
-        # -- this is what gives neighbouring pixels their smooth, gradual
-        # fade in/out as the wave approaches and departs.
+        # Continuous distance to the peak -- gives neighbouring pixels a
+        # smooth fade in/out as the wave approaches and departs.
         raw_dist: float = abs(pixel_index - peak)
-        distance: float = min(raw_dist, num_pixels - raw_dist)
+        distance: float = min(raw_dist, num_pixels - raw_dist)  # circular
 
-        # Whichever pixel is currently closest to the peak is held at
-        # zero distance (i.e. full colour2) for its entire turn, instead
-        # of only touching full brightness for an instant as the
-        # continuous peak sweeps past it. Without this, a small `spread`
-        # would make the peak pixel flicker on and off rather than hold
-        # steady; with it, only this one pixel's distance is overridden --
-        # every other pixel still follows the smooth continuous curve
-        # above, so the wave keeps travelling gradually rather than
-        # jumping as a rigid block.
+        # Force the single nearest pixel to full brightness for its whole
+        # turn (instead of only for an instant), so it holds steady
+        # rather than flickering; every other pixel still uses the smooth
+        # continuous distance above.
         nearest_index: int = int(peak + 0.5) % num_pixels
         if pixel_index == nearest_index:
             distance = 0.0
 
         if self.spread is not None:
-            # Guard against zero/negative/degenerately tiny spreads:
-            # rather than raising or dividing by zero, clamp to a small
-            # positive floor. This still yields a very sharp, almost
-            # single-pixel "point" of light -- just without the crash.
-            sigma: float = max(self.spread, _MIN_SPREAD)
+            sigma: float = max(self.spread, _MIN_SPREAD)  # avoid div-by-0
         else:
             sigma = max(0.6, num_pixels / 6.0)
         weight: float = math.exp(-(distance * distance) / (2 * sigma * sigma))
@@ -465,16 +324,15 @@ class Wave(Pattern):
 # NeoPixelManager
 # ----------------------------------------------------------------------
 class NeoPixelManager(neopixel.NeoPixel):
-    """NeoPixel strip with pre-declared subsets and per-subset Patterns."""
+    """NeoPixel strip with named pixel subsets and per-subset Patterns."""
 
     def __init__(self, pin_id: int, n: int, bpp: int = 3, timing: int = 1) -> None:
         """
         Args:
-            pin_id (int): machine pin ID
-            n (int): number of LEDs in the array
-            bpp (int, optional): is 3 for RGB LEDs, and 4 for RGBW LEDs.
-            timing (int, optional): is 0 for 400KHz, and 1 for 800kHz LEDs
-                (most are 800kHz)
+            pin_id (int): machine pin ID.
+            n (int): number of LEDs in the array.
+            bpp (int, optional): 3 for RGB LEDs, 4 for RGBW LEDs.
+            timing (int, optional): 0 for 400KHz, 1 for 800kHz (most LEDs).
         """
         super().__init__(Pin(pin_id), n, bpp, timing)
         self._subsets: dict = {}  # id -> (start, length)
@@ -486,17 +344,17 @@ class NeoPixelManager(neopixel.NeoPixel):
     # Subset management
     # ------------------------------------------------------------------
     def add_subset(self, length: int = None) -> int:
-        """Pre-register a contiguous block of pixels for later addressing.
+        """Register a contiguous block of pixels for later addressing.
 
-        The block starts wherever the previous subset (if any) left off.
+        The block starts wherever the previous subset left off.
 
         Args:
-            length (int, optional): number of pixels to claim; None claims
-                every pixel not yet owned by an earlier subset.
+            length (int, optional): number of pixels to claim; None
+                claims every pixel not yet owned by an earlier subset.
 
         Returns:
-            int: auto-generated numeric id (0, 1, 2, ...) for this subset,
-            used with set_pattern().
+            int: auto-generated id (0, 1, 2, ...) for use with
+            set_pattern().
         """
         n: int = len(self)
         start: int = self._cursor
@@ -512,8 +370,7 @@ class NeoPixelManager(neopixel.NeoPixel):
     def _resolve_range(self, subset_id: int) -> tuple:
         """Translate a subset id (or None) into a (start, length) tuple.
 
-        `subset_id=None` maps to whatever pixels remain unclaimed by any
-        subset (from the current cursor to the end of the strip).
+        None maps to whatever pixels remain unclaimed by any subset.
         """
         if subset_id is None:
             n: int = len(self)
@@ -527,9 +384,7 @@ class NeoPixelManager(neopixel.NeoPixel):
     # Basic pixel operations
     # ------------------------------------------------------------------
     def clear(self) -> None:
-        """
-        Stop all active patterns and blank every pixel, keeping the
-        underlying subset structure intact (ids remain valid).
+        """Stop all patterns and blank every pixel; subsets stay valid.
 
         Call write() afterwards to push the change to the physical strip.
         """
@@ -540,11 +395,9 @@ class NeoPixelManager(neopixel.NeoPixel):
             self[i] = off
 
     def reset(self) -> None:
-        """
-        Stop all active patterns, blank every pixel, and forget the subset
-        structure entirely. add_subset() must be called again afterwards
-        to re-establish ids.
+        """Like clear(), but also forgets the subset structure entirely.
 
+        add_subset() must be called again afterwards to re-establish ids.
         Call write() afterwards to push the change to the physical strip.
         """
         self.clear()
@@ -560,20 +413,13 @@ class NeoPixelManager(neopixel.NeoPixel):
 
         Args:
             pattern (Pattern): a Solid, Off, Pulse, Flash, Wave (or custom
-                Pattern subclass) instance describing the desired effect.
-                To stop a subset's current pattern, call this again with
-                Off().
-            id (int, optional): id returned from add_subset(); None targets
-                whatever pixels are not yet claimed by any subset.
+                Pattern subclass) instance. To stop a subset's pattern,
+                call this again with Off().
+            id (int, optional): id from add_subset(); None targets pixels
+                not yet claimed by any subset.
 
         Returns:
             int: the id this pattern is attached to (echoes `id`).
-
-        Note:
-            Calling set_pattern() again with the same `id` replaces any
-            existing pattern on that subset. The pattern is rendered
-            immediately; animated patterns (is_animated() == True) are then
-            kept up to date by update()/poll().
         """
         start, length = self._resolve_range(id)
 
@@ -592,17 +438,7 @@ class NeoPixelManager(neopixel.NeoPixel):
         self._patterns.clear()
 
     def _render(self, entry: dict, elapsed_ms: int) -> None:
-        """Compute and write a pattern entry's colours into the pixel buffer.
-
-        Every pattern is asked for its colour one pixel at a time via
-        get_pixel_color(). Patterns that colour every pixel the same
-        (Solid, Pulse, Flash, ...) just return the same value regardless
-        of pixel_index/num_pixels; patterns like Wave use those arguments
-        to vary the colour across the subset. Every colour returned is
-        already normalised to self.bpp channels by the pattern itself
-        (via _normalize_color()/_interp()), so it is safe to write
-        directly into the strip buffer here.
-        """
+        """Write a pattern entry's colours into the pixel buffer."""
         pattern: Pattern = entry["pattern"]
         n: int = len(self)
         first: int = max(0, entry["start"])
@@ -613,14 +449,11 @@ class NeoPixelManager(neopixel.NeoPixel):
             self[i] = pattern.get_pixel_color(offset, length, elapsed_ms, self.bpp)
 
     def update(self) -> None:
-        """
-        Recompute the colour of every *animated* pattern's subset based on
-        the current time and write those values into the pixel buffer.
-        Static patterns (Solid, Off) were already rendered once when
-        set_pattern() was called, so they are skipped here for efficiency.
+        """Recompute every animated pattern's colours from elapsed time.
 
-        This does NOT push data to the physical strip -- call write()
-        (or the poll() helper below) afterwards to do that.
+        Static patterns (Solid, Off) were already rendered once by
+        set_pattern(), so they're skipped here. Does NOT call write() --
+        use poll() for that, or call write() yourself afterwards.
         """
         now: int = time.ticks_ms()
 
