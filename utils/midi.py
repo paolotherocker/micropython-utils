@@ -2,96 +2,39 @@
 midi.py
 =======
 
-A MIDI message library for a MicroPython instance.
+MIDI message library for a MicroPython instance.
 
-This module defines a `Message` class hierarchy for standard MIDI channel
-and system realtime messages, a separate `SysEx` type for System
-Exclusive data, and two output classes sharing an identical
-`send_message()`/`send_sysex()` API:
+Provides a `Message` class hierarchy for standard MIDI messages, a
+`SysEx` type for System Exclusive data, and two output classes with an
+identical `send_message()` / `send_sysex()` API:
 
-- `MidiUsb`: extends `usb.device.midi.MIDIInterface` and initialises the
-  USB MIDI device automatically.
-- `MidiUart`: sends the same messages as a raw byte stream over a
-  `machine.UART`, using the standard MIDI serial protocol (31250 baud,
-  8 data bits, no parity, 1 stop bit -- no USB involved at all).
-
-Because both classes expose the same two methods, application code that
-builds `Message`/`SysEx` instances and calls `send_message()`/
-`send_sysex()` on an interface object works unchanged whether that object
-is a `MidiUsb`, a `MidiUart`, or -- since both accept the same calls --
-looped over a list containing both, to transmit out of two ports at once.
-
-Each `Message` subclass exposes `to_bytes()` (the raw MIDI bytes as a list
-of integers) and `cin()` (the USB-MIDI Code Index Number, used only by
-`MidiUsb`).
+- `MidiUsb`: sends over USB via `usb.device.midi.MIDIInterface`.
+- `MidiUart`: sends over a `machine.UART` at standard MIDI serial
+  settings (31250 baud, 8N1).
 
 Dependencies
 ------------
 
-`MidiUsb` requires MicroPython's USB MIDI device package:
+`MidiUsb` requires: `mpremote mip install usb-device-midi`, on firmware
+with `usb.device` support.
 
-    mpremote mip install usb-device-midi
+`MidiUart` requires only the built-in `machine` module.
 
-and firmware with `usb.device` support. If `usb.device` or
-`usb.device.midi` are not importable, `MidiUsb` falls back to subclassing
-`object` and raises a clear `RuntimeError` if instantiated.
-
-`MidiUart` requires only the built-in `machine` module (`machine.UART`
-and `machine.Pin`); no additional package is needed. If `machine` is not
-importable (for example, when this module is loaded outside MicroPython),
-`MidiUart` raises a clear `RuntimeError` if instantiated.
-
-Either class can be used independently -- this module still imports (and
-`Message`/`SysEx` remain fully usable) even if one or both of these
-dependencies are unavailable.
-
-Why SysEx is not a Message
---------------------------
-
-Every `Message` subclass maps to exactly one fixed-size USB-MIDI Event
-Packet, so `cin()` always returns a single, well-defined Code Index
-Number for it. SysEx does not fit that contract: it is variable length
-and, over USB, must be split into multiple 3-byte packets, each with a
-*different* CIN depending on its position in the stream (0x4 for
-start/continue packets, 0x5/0x6/0x7 for the final packet depending on
-whether it ends with 1, 2, or 3 bytes). There is no single correct
-`cin()` value for a SysEx message as a whole. Over UART there is no
-packet framing at all, so this distinction does not apply there, but
-`SysEx` is still kept separate from `Message` for a consistent interface
-across both transports.
-
-Making `SysEx` its own type, rather than a `Message` subclass with a
-`cin()` that returns `None` or raises, means code written against the
-`Message` interface simply cannot call `.cin()` on a `SysEx` instance by
-accident -- the method does not exist on it, so doing so raises a
-standard `AttributeError` immediately. `MidiUsb.send_sysex()` handles USB
-SysEx chunking and per-packet CIN selection internally; `MidiUart.send_sysex()`
-just writes the raw bytes.
+Both dependencies are optional at import time -- `Message` and `SysEx`
+remain usable even if one or both are unavailable. Instantiating the
+corresponding class without its dependency raises `RuntimeError`.
 
 Examples
 --------
 
-USB MIDI via `MidiUsb` (device initialisation happens in the constructor)::
-
-    from midi import MidiUsb, NoteOn, ControlChange, SysEx
+    from midi import MidiUsb, MidiUart, NoteOn, ControlChange, SysEx
 
     usb_midi = MidiUsb(product_str="My MIDI Controller")
+    serial_midi = MidiUart(uart_id=1, tx_pin=4, rx_pin=5)
 
     usb_midi.send_message(NoteOn(0, note=60, velocity=100))
-    usb_midi.send_message(ControlChange(0, controller=20, value=127))
+    serial_midi.send_message(ControlChange(0, controller=20, value=127))
     usb_midi.send_sysex(SysEx([0x7E, 0x00, 0x09, 0x01]))
-
-Serial MIDI via `MidiUart` (UART is configured automatically too)::
-
-    from midi import MidiUart, NoteOn
-
-    serial_midi = MidiUart(uart_id=1, tx_pin=4, rx_pin=5)
-    serial_midi.send_message(NoteOn(0, note=60, velocity=100))
-
-Sending the same message out of both transports::
-
-    for interface in (usb_midi, serial_midi):
-        interface.send_message(NoteOn(0, note=60, velocity=100))
 """
 
 try:
@@ -139,24 +82,21 @@ def _clamp7(value: int, name: str = "value") -> int:
 
 
 def _clamp_channel(channel: int) -> int:
-    """Validate and return a zero-based MIDI channel number."""
+    """Validate and return a zero-based MIDI channel number (0-15)."""
     if not 0 <= channel <= 15:
         raise ValueError("channel must be 0-15, got %r" % channel)
     return channel
 
 
 class Message:
-    """
-    Abstract base class for fixed-size MIDI messages.
-
-    Concrete subclasses implement `to_bytes()` and `cin()`, the latter
-    returning the USB-MIDI Code Index Number. Channels are zero-based:
-    channel=0 is MIDI channel 1, and channel=15 is MIDI channel 16.
-
-    SysEx is deliberately not part of this hierarchy; see `SysEx` below.
-    """
+    """Base class for fixed-size MIDI messages."""
 
     def __init__(self, channel: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15). channel=0 is MIDI
+                channel 1.
+        """
         self.channel: int = _clamp_channel(channel)
 
     def to_bytes(self) -> list:
@@ -175,6 +115,12 @@ class NoteOn(Message):
     """MIDI Note On message."""
 
     def __init__(self, channel: int, note: int, velocity: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            note: MIDI note number (0-127).
+            velocity: Note-on velocity (0-127).
+        """
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.velocity: int = _clamp7(velocity, "velocity")
@@ -190,6 +136,12 @@ class NoteOff(Message):
     """MIDI Note Off message."""
 
     def __init__(self, channel: int, note: int, velocity: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            note: MIDI note number (0-127).
+            velocity: Release velocity (0-127).
+        """
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.velocity: int = _clamp7(velocity, "velocity")
@@ -205,6 +157,12 @@ class ControlChange(Message):
     """MIDI Control Change message."""
 
     def __init__(self, channel: int, controller: int, value: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            controller: Controller number (0-127).
+            value: Controller value (0-127).
+        """
         super().__init__(channel)
         self.controller: int = _clamp7(controller, "controller")
         self.value: int = _clamp7(value, "value")
@@ -220,6 +178,11 @@ class ProgramChange(Message):
     """MIDI Program Change message."""
 
     def __init__(self, channel: int, program: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            program: Program number (0-127).
+        """
         super().__init__(channel)
         self.program: int = _clamp7(program, "program")
 
@@ -234,6 +197,11 @@ class ChannelAftertouch(Message):
     """MIDI channel pressure (monophonic aftertouch) message."""
 
     def __init__(self, channel: int, pressure: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            pressure: Pressure value (0-127).
+        """
         super().__init__(channel)
         self.pressure: int = _clamp7(pressure, "pressure")
 
@@ -248,6 +216,12 @@ class PolyAftertouch(Message):
     """MIDI polyphonic key-pressure message."""
 
     def __init__(self, channel: int, note: int, pressure: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            note: MIDI note number (0-127).
+            pressure: Pressure value (0-127).
+        """
         super().__init__(channel)
         self.note: int = _clamp7(note, "note")
         self.pressure: int = _clamp7(pressure, "pressure")
@@ -260,24 +234,25 @@ class PolyAftertouch(Message):
 
 
 class PitchBend(Message):
-    """
-    MIDI 14-bit pitch bend.
-
-    `value` ranges from -8192 to 8191. Zero is centre/no bend.
-    """
+    """MIDI 14-bit pitch bend message."""
 
     def __init__(self, channel: int, value: int) -> None:
+        """
+        Arguments:
+            channel: Zero-based MIDI channel (0-15).
+            value: Bend amount, -8192 to 8191. Zero is centre/no bend.
+        """
         super().__init__(channel)
         if not -8192 <= value <= 8191:
             raise ValueError("pitch bend value must be -8192..8191")
         self.value: int = value
 
     def to_bytes(self) -> list:
-        raw: int = self.value + 8192
+        raw: int = self.value + 8192  # shift to unsigned 14-bit range
         return [
             (_PITCH_BEND << 4) | self.channel,
-            raw & 0x7F,
-            (raw >> 7) & 0x7F,
+            raw & 0x7F,        # LSB
+            (raw >> 7) & 0x7F,  # MSB
         ]
 
     def cin(self) -> int:
@@ -290,6 +265,12 @@ class SystemRealtime(Message):
     _STATUS = None
 
     def __init__(self, channel: int) -> None:
+        """
+        Arguments:
+            channel: Unused (system realtime messages are channel-less),
+                kept for a consistent constructor across all Message
+                subclasses.
+        """
         super().__init__(channel)
 
     def to_bytes(self) -> list:
@@ -330,27 +311,20 @@ class SystemReset(SystemRealtime):
 
 
 # ===========================================================================
-# System Exclusive -- deliberately not a Message subclass; see module
-# docstring for why.
+# System Exclusive
 # ===========================================================================
 
+# Not a Message subclass: SysEx is variable-length and has no single
+# fixed cin(), so it deliberately doesn't implement the Message interface.
 class SysEx:
-    """
-    MIDI System Exclusive message.
-
-    `data` is the payload only. Do not include 0xF0 and 0xF7; this class
-    adds them when rendering the complete wire-format message via
-    `to_bytes()`.
-
-    SysEx has no MIDI channel and no single fixed USB-MIDI Code Index
-    Number, so it intentionally does not implement the `Message`
-    interface (`cin()`) and is not a subclass of `Message`. Send it with
-    `MidiUsb.send_sysex()` (which handles the required 3-byte chunking
-    and per-chunk CIN selection) or `MidiUart.send_sysex()` (which writes
-    the raw bytes directly, since UART has no packet framing).
-    """
+    """MIDI System Exclusive message."""
 
     def __init__(self, data: list) -> None:
+        """
+        Arguments:
+            data: SysEx payload bytes (0-127 each), excluding the 0xF0
+                and 0xF7 start/end bytes -- those are added automatically.
+        """
         self.data: list = list(data)
         for byte in self.data:
             if not 0 <= byte <= 127:
@@ -368,28 +342,7 @@ class SysEx:
 # ===========================================================================
 
 class MidiUsb(MIDIInterface):
-    """
-    Self-initialising USB MIDI interface with `Message`/`SysEx`-aware send
-    helpers.
-
-    Extends `usb.device.midi.MIDIInterface`, which already provides the
-    low-level `send_event(cin, midi0, midi1=0, midi2=0)` primitive used to
-    transmit a single USB-MIDI Event Packet. The constructor registers
-    itself with the USB device stack automatically, using the singleton
-    from `usb.device.get()` -- there is no need to call
-    `usb.device.get().init(...)` separately. This class also adds:
-
-    - `send_message(msg)`: send any `Message` instance (`NoteOn`,
-      `ControlChange`, `ProgramChange`, etc.) in a single call.
-    - `send_sysex(msg)`: send a `SysEx` instance, automatically split
-      into correctly CIN-tagged 3-byte USB-MIDI packets.
-
-    Example::
-
-        usb_midi = MidiUsb(product_str="My MIDI Controller")
-        usb_midi.send_message(NoteOn(0, note=60, velocity=100))
-        usb_midi.send_sysex(SysEx([0x7E, 0x00, 0x09, 0x01]))
-    """
+    """Self-initialising USB MIDI interface with Message/SysEx send helpers."""
 
     def __init__(
         self,
@@ -401,17 +354,12 @@ class MidiUsb(MIDIInterface):
     ) -> None:
         """
         Arguments:
-            product_str: Optional USB product string descriptor, shown by
-                the host as the device name (for example, in a DAW's MIDI
-                port list).
-            manufacturer_str: Optional USB manufacturer string descriptor.
-            rxlen: Receive buffer size in bytes, passed to
-                `usb.device.midi.MIDIInterface`.
-            txlen: Transmit buffer size in bytes, passed to
-                `usb.device.midi.MIDIInterface`.
-            builtin_driver: Passed to `usb.device.get().init()`. Keep this
-                `True` unless you are also registering other custom USB
-                interfaces that require it disabled.
+            product_str: USB product string shown by the host (e.g. DAW
+                MIDI port name).
+            manufacturer_str: USB manufacturer string.
+            rxlen: Receive buffer size in bytes.
+            txlen: Transmit buffer size in bytes.
+            builtin_driver: Passed to `usb.device.get().init()`.
         """
         if MIDIInterface is object:
             raise RuntimeError(
@@ -431,7 +379,12 @@ class MidiUsb(MIDIInterface):
         usb.device.get().init(self, **init_kwargs)
 
     def send_message(self, msg: Message) -> None:
-        """Send a fixed-size `Message` as a single USB-MIDI Event Packet."""
+        """
+        Send a fixed-size Message as a single USB-MIDI Event Packet.
+
+        Arguments:
+            msg: A `Message` instance (e.g. `NoteOn`, `ControlChange`).
+        """
         if not isinstance(msg, Message):
             raise TypeError(
                 "send_message() expects a Message instance, got %r" % (msg,)
@@ -439,7 +392,12 @@ class MidiUsb(MIDIInterface):
         self.send_event(msg.cin(), *msg.to_bytes())
 
     def send_sysex(self, msg: SysEx) -> None:
-        """Send a `SysEx` message, split into 3-byte USB-MIDI packets."""
+        """
+        Send a SysEx message, split into 3-byte USB-MIDI packets.
+
+        Arguments:
+            msg: A `SysEx` instance.
+        """
         if not isinstance(msg, SysEx):
             raise TypeError(
                 "send_sysex() expects a SysEx instance, got %r" % (msg,)
@@ -452,12 +410,14 @@ class MidiUsb(MIDIInterface):
             chunk: list = data[index * 3 : index * 3 + 3]
             is_last: bool = index == chunk_count - 1
 
+            # CIN 0x4 = SysEx starts or continues (always a full 3-byte
+            # chunk). Final chunk uses 0x5/0x6/0x7 for a 1/2/3-byte end.
             if is_last:
                 cin: int = {1: 0x5, 2: 0x6, 3: 0x7}[len(chunk)]
             else:
                 cin = 0x4
 
-            b0, b1, b2 = (chunk + [0, 0, 0])[:3]
+            b0, b1, b2 = (chunk + [0, 0, 0])[:3]  # zero-pad short chunks
             self.send_event(cin, b0, b1, b2)
 
 
@@ -466,27 +426,7 @@ class MidiUsb(MIDIInterface):
 # ===========================================================================
 
 class MidiUart:
-    """
-    Self-initialising serial MIDI interface with `Message`/`SysEx`-aware
-    send helpers, matching the `MidiUsb` API.
-
-    Configures a `machine.UART` at the standard MIDI serial settings
-    (31250 baud, 8 data bits, no parity, 1 stop bit) and writes messages
-    to it as a plain byte stream -- there is no packet framing or Code
-    Index Number involved, since that is a USB-MIDI concept only. This
-    class exposes the same two methods as `MidiUsb`:
-
-    - `send_message(msg)`: send any `Message` instance (`NoteOn`,
-      `ControlChange`, `ProgramChange`, etc.) as its raw MIDI bytes.
-    - `send_sysex(msg)`: send a `SysEx` instance as its raw MIDI bytes,
-      including the 0xF0/0xF7 start/end bytes.
-
-    Example::
-
-        serial_midi = MidiUart(uart_id=1, tx_pin=4, rx_pin=5)
-        serial_midi.send_message(NoteOn(0, note=60, velocity=100))
-        serial_midi.send_sysex(SysEx([0x7E, 0x00, 0x09, 0x01]))
-    """
+    """Self-initialising serial MIDI interface, matching the MidiUsb API."""
 
     def __init__(
         self,
@@ -497,11 +437,11 @@ class MidiUart:
     ) -> None:
         """
         Arguments:
-            uart_id: The `machine.UART` peripheral number to use.
+            uart_id: `machine.UART` peripheral number to use.
             tx_pin: GPIO pin number connected to the MIDI output circuit.
             rx_pin: GPIO pin number connected to the MIDI input circuit.
             baudrate: Serial baud rate. Defaults to the standard MIDI
-                rate of 31250; only change this for non-standard links.
+                rate of 31250.
         """
         if UART is None or Pin is None:
             raise RuntimeError(
@@ -520,7 +460,12 @@ class MidiUart:
         )
 
     def send_message(self, msg: Message) -> None:
-        """Write a fixed-size `Message` as raw MIDI bytes."""
+        """
+        Write a fixed-size Message as raw MIDI bytes.
+
+        Arguments:
+            msg: A `Message` instance (e.g. `NoteOn`, `ControlChange`).
+        """
         if not isinstance(msg, Message):
             raise TypeError(
                 "send_message() expects a Message instance, got %r" % (msg,)
@@ -528,7 +473,12 @@ class MidiUart:
         self._uart.write(bytes(msg.to_bytes()))
 
     def send_sysex(self, msg: SysEx) -> None:
-        """Write a `SysEx` message as raw MIDI bytes."""
+        """
+        Write a SysEx message as raw MIDI bytes.
+
+        Arguments:
+            msg: A `SysEx` instance.
+        """
         if not isinstance(msg, SysEx):
             raise TypeError(
                 "send_sysex() expects a SysEx instance, got %r" % (msg,)
