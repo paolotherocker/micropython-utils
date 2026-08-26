@@ -1,17 +1,33 @@
 """
-midimessages.py
-================
+midi.py
+=======
 
 A MIDI message library for a MicroPython instance.
 
 This module defines a `Message` class hierarchy for standard MIDI channel
-and system realtime messages, plus a separate `SysEx` type for System
-Exclusive data. Each `Message` subclass exposes `to_bytes()` (the raw MIDI
-bytes as a list of integers) and `cin()` (the USB-MIDI Code Index Number),
-ready to be passed directly to a transport of your choice (for example,
-`usb.device.midi.MIDIInterface` or `machine.UART`).
+and system realtime messages, a separate `SysEx` type for System
+Exclusive data, and a `MidiUsb` class that extends
+`usb.device.midi.MIDIInterface`, initialises the USB device automatically,
+and adds `send_message()`/`send_sysex()` helpers built on top of these
+types.
 
-This module does not send messages itself; it only builds them.
+Each `Message` subclass exposes `to_bytes()` (the raw MIDI bytes as a list
+of integers) and `cin()` (the USB-MIDI Code Index Number). These are
+usable on their own with any transport (for example, `machine.UART`), or
+through `MidiUsb` for USB MIDI.
+
+Dependencies
+------------
+
+`MidiUsb` requires MicroPython's USB MIDI device package:
+
+    mpremote mip install usb-device-midi
+
+and firmware with `usb.device` support. If `usb.device` or
+`usb.device.midi` are not importable, `MidiUsb` falls back to subclassing
+`object` and raises a clear `RuntimeError` if instantiated, so this module
+still imports (and `Message`/`SysEx` remain fully usable) on builds
+without USB device support.
 
 Why SysEx is not a Message
 --------------------------
@@ -29,47 +45,39 @@ Making `SysEx` its own type, rather than a `Message` subclass with a
 `cin()` that returns `None` or raises, means code written against the
 `Message` interface simply cannot call `.cin()` on a `SysEx` instance by
 accident -- the method does not exist on it, so doing so raises a
-standard `AttributeError` immediately. Callers sending SysEx data must
-handle its chunking and per-packet CIN selection explicitly.
+standard `AttributeError` immediately. `MidiUsb.send_sysex()` handles
+SysEx chunking and per-packet CIN selection internally.
 
 Examples
 --------
 
-Build and send a Note On over a `machine.UART` configured for MIDI::
+USB MIDI via `MidiUsb` (device initialisation happens in the constructor)::
+
+    from midi import MidiUsb, NoteOn, ControlChange, SysEx
+
+    usb_midi = MidiUsb(product_str="My MIDI Controller")
+
+    usb_midi.send_message(NoteOn(0, note=60, velocity=100))
+    usb_midi.send_message(ControlChange(0, controller=20, value=127))
+    usb_midi.send_sysex(SysEx([0x7E, 0x00, 0x09, 0x01]))
+
+Serial MIDI over `machine.UART` (no `MidiUsb` needed)::
 
     import machine
-    from midimessages import NoteOn
+    from midi import NoteOn
 
     uart = machine.UART(1, baudrate=31250,
                         tx=machine.Pin(4), rx=machine.Pin(5))
     message = NoteOn(0, note=60, velocity=100)
     uart.write(bytes(message.to_bytes()))
+"""
 
-Build and send a Control Change over a USB MIDI interface::
-
+try:
     import usb.device
     from usb.device.midi import MIDIInterface
-    from midimessages import ControlChange
-
-    usb_midi = MIDIInterface()
-    usb.device.get().init(usb_midi, builtin_driver=True)
-    message = ControlChange(0, controller=20, value=127)
-    usb_midi.send_event(message.cin(), *message.to_bytes())
-
-Send a SysEx message over UART (USB requires manual 3-byte chunking with
-a per-chunk CIN, as described above)::
-
-    from midimessages import SysEx
-
-    message = SysEx([0x7E, 0x00, 0x09, 0x01])
-    uart.write(bytes(message.to_bytes()))
-
-`cin()` returns the USB-MIDI Code Index Number for the message, available
-on every `Message` subclass for use with USB-MIDI Event Packet transports.
-Consult the API of your installed `usb.device.midi.MIDIInterface` for the
-exact send method and argument order it expects, since this has varied
-between MicroPython releases.
-"""
+except ImportError:
+    usb = None
+    MIDIInterface = object
 
 # ===========================================================================
 # MIDI message classes
@@ -292,7 +300,8 @@ class SystemReset(SystemRealtime):
 
 
 # ===========================================================================
-# System Exclusive 
+# System Exclusive -- deliberately not a Message subclass; see module
+# docstring for why.
 # ===========================================================================
 
 class SysEx:
@@ -305,12 +314,9 @@ class SysEx:
 
     SysEx has no MIDI channel and no single fixed USB-MIDI Code Index
     Number, so it intentionally does not implement the `Message`
-    interface (`cin()`) and is not a subclass of `Message`. A caller
-    using a USB-MIDI Event Packet transport must split `to_bytes()` into
-    3-byte chunks and select the CIN per chunk directly: 0x4 for
-    start/continue packets, and 0x5, 0x6, or 0x7 for the final packet
-    depending on whether it ends with 1, 2, or 3 bytes, per the USB MIDI
-    1.0 specification.
+    interface (`cin()`) and is not a subclass of `Message`. Send it over
+    USB MIDI with `MidiUsb.send_sysex()`, which handles the required
+    3-byte chunking and per-chunk CIN selection.
     """
 
     def __init__(self, data: list) -> None:
@@ -324,3 +330,101 @@ class SysEx:
 
     def __repr__(self) -> str:
         return "<SysEx bytes=%s>" % (self.to_bytes(),)
+
+
+# ===========================================================================
+# USB MIDI interface
+# ===========================================================================
+
+class MidiUsb(MIDIInterface):
+    """
+    Self-initialising USB MIDI interface with `Message`/`SysEx`-aware send
+    helpers.
+
+    Extends `usb.device.midi.MIDIInterface`, which already provides the
+    low-level `send_event(cin, midi0, midi1=0, midi2=0)` primitive used to
+    transmit a single USB-MIDI Event Packet. The constructor registers
+    itself with the USB device stack automatically, using the singleton
+    from `usb.device.get()` -- there is no need to call
+    `usb.device.get().init(...)` separately. This class also adds:
+
+    - `send_message(msg)`: send any `Message` instance (`NoteOn`,
+      `ControlChange`, `ProgramChange`, etc.) in a single call.
+    - `send_sysex(msg)`: send a `SysEx` instance, automatically split
+      into correctly CIN-tagged 3-byte USB-MIDI packets.
+
+    Example::
+
+        usb_midi = MidiUsb(product_str="My MIDI Controller")
+        usb_midi.send_message(NoteOn(0, note=60, velocity=100))
+        usb_midi.send_sysex(SysEx([0x7E, 0x00, 0x09, 0x01]))
+    """
+
+    def __init__(
+        self,
+        product_str: str = None,
+        manufacturer_str: str = None,
+        rxlen: int = 16,
+        txlen: int = 16,
+        builtin_driver: bool = True,
+    ) -> None:
+        """
+        Arguments:
+            product_str: Optional USB product string descriptor, shown by
+                the host as the device name (for example, in a DAW's MIDI
+                port list).
+            manufacturer_str: Optional USB manufacturer string descriptor.
+            rxlen: Receive buffer size in bytes, passed to
+                `usb.device.midi.MIDIInterface`.
+            txlen: Transmit buffer size in bytes, passed to
+                `usb.device.midi.MIDIInterface`.
+            builtin_driver: Passed to `usb.device.get().init()`. Keep this
+                `True` unless you are also registering other custom USB
+                interfaces that require it disabled.
+        """
+        if MIDIInterface is object:
+            raise RuntimeError(
+                "usb.device.midi.MIDIInterface is not available. Install "
+                "it with `mpremote mip install usb-device-midi` on "
+                "firmware with usb.device support."
+            )
+
+        super().__init__(rxlen=rxlen, txlen=txlen)
+
+        init_kwargs = {"builtin_driver": builtin_driver}
+        if product_str is not None:
+            init_kwargs["product_str"] = product_str
+        if manufacturer_str is not None:
+            init_kwargs["manufacturer_str"] = manufacturer_str
+
+        usb.device.get().init(self, **init_kwargs)
+
+    def send_message(self, msg: Message) -> None:
+        """Send a fixed-size `Message` as a single USB-MIDI Event Packet."""
+        if not isinstance(msg, Message):
+            raise TypeError(
+                "send_message() expects a Message instance, got %r" % (msg,)
+            )
+        self.send_event(msg.cin(), *msg.to_bytes())
+
+    def send_sysex(self, msg: SysEx) -> None:
+        """Send a `SysEx` message, split into 3-byte USB-MIDI packets."""
+        if not isinstance(msg, SysEx):
+            raise TypeError(
+                "send_sysex() expects a SysEx instance, got %r" % (msg,)
+            )
+
+        data: list = msg.to_bytes()
+        chunk_count: int = (len(data) + 2) // 3
+
+        for index in range(chunk_count):
+            chunk: list = data[index * 3 : index * 3 + 3]
+            is_last: bool = index == chunk_count - 1
+
+            if is_last:
+                cin: int = {1: 0x5, 2: 0x6, 3: 0x7}[len(chunk)]
+            else:
+                cin = 0x4
+
+            b0, b1, b2 = (chunk + [0, 0, 0])[:3]
+            self.send_event(cin, b0, b1, b2)
