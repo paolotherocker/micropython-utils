@@ -4,13 +4,33 @@ midimessages.py
 
 A MIDI message library for a MicroPython instance.
 
-This module defines a `Message` class hierarchy for standard MIDI
-messages. Each message exposes a `to_bytes()` method that returns the
-raw MIDI bytes as a list of integers, ready to be passed directly to a
-transport of your choice (for example, `usb.device.midi.MIDIInterface`
-or `machine.UART`).
+This module defines a `Message` class hierarchy for standard MIDI channel
+and system realtime messages, plus a separate `SysEx` type for System
+Exclusive data. Each `Message` subclass exposes `to_bytes()` (the raw MIDI
+bytes as a list of integers) and `cin()` (the USB-MIDI Code Index Number),
+ready to be passed directly to a transport of your choice (for example,
+`usb.device.midi.MIDIInterface` or `machine.UART`).
 
 This module does not send messages itself; it only builds them.
+
+Why SysEx is not a Message
+--------------------------
+
+Every `Message` subclass maps to exactly one fixed-size USB-MIDI Event
+Packet, so `cin()` always returns a single, well-defined Code Index
+Number for it. SysEx does not fit that contract: it is variable length
+and must be split into multiple 3-byte packets, each with a *different*
+CIN depending on its position in the stream (0x4 for start/continue
+packets, 0x5/0x6/0x7 for the final packet depending on whether it ends
+with 1, 2, or 3 bytes). There is no single correct `cin()` value for a
+SysEx message as a whole.
+
+Making `SysEx` its own type, rather than a `Message` subclass with a
+`cin()` that returns `None` or raises, means code written against the
+`Message` interface simply cannot call `.cin()` on a `SysEx` instance by
+accident -- the method does not exist on it, so doing so raises a
+standard `AttributeError` immediately. Callers sending SysEx data must
+handle its chunking and per-packet CIN selection explicitly.
 
 Examples
 --------
@@ -34,13 +54,21 @@ Build and send a Control Change over a USB MIDI interface::
     usb_midi = MIDIInterface()
     usb.device.get().init(usb_midi, builtin_driver=True)
     message = ControlChange(0, controller=20, value=127)
-    usb_midi.send_event(0, message.cin(), *message.to_bytes())
+    usb_midi.send_event(message.cin(), *message.to_bytes())
+
+Send a SysEx message over UART (USB requires manual 3-byte chunking with
+a per-chunk CIN, as described above)::
+
+    from midimessages import SysEx
+
+    message = SysEx([0x7E, 0x00, 0x09, 0x01])
+    uart.write(bytes(message.to_bytes()))
 
 `cin()` returns the USB-MIDI Code Index Number for the message, available
-on every concrete `Message` subclass for use with USB-MIDI Event Packet
-transports. Consult the API of your installed `usb.device.midi.MIDIInterface`
-for the exact send method and argument order it expects, since this has
-varied between MicroPython releases.
+on every `Message` subclass for use with USB-MIDI Event Packet transports.
+Consult the API of your installed `usb.device.midi.MIDIInterface` for the
+exact send method and argument order it expects, since this has varied
+between MicroPython releases.
 """
 
 # ===========================================================================
@@ -81,11 +109,13 @@ def _clamp_channel(channel: int) -> int:
 
 class Message:
     """
-    Abstract base class for MIDI messages.
+    Abstract base class for fixed-size MIDI messages.
 
     Concrete subclasses implement `to_bytes()` and `cin()`, the latter
     returning the USB-MIDI Code Index Number. Channels are zero-based:
     channel=0 is MIDI channel 1, and channel=15 is MIDI channel 16.
+
+    SysEx is deliberately not part of this hierarchy; see `SysEx` below.
     """
 
     def __init__(self, channel: int) -> None:
@@ -261,22 +291,29 @@ class SystemReset(SystemRealtime):
     _STATUS: int = _SYSTEM_RESET
 
 
-class SysEx(Message):
+# ===========================================================================
+# System Exclusive 
+# ===========================================================================
+
+class SysEx:
     """
     MIDI System Exclusive message.
 
     `data` is the payload only. Do not include 0xF0 and 0xF7; this class
-    adds them when rendering the complete wire-format message.
+    adds them when rendering the complete wire-format message via
+    `to_bytes()`.
 
-    SysEx is variable length, so `cin()` does not return a single fixed
-    Code Index Number the way channel voice messages do. Callers using a
-    USB-MIDI Event Packet transport must split `to_bytes()` into 3-byte
-    chunks themselves and select the appropriate start/continue/end CIN
-    (0x4, 0x5, 0x6, or 0x7) per chunk, per the USB MIDI 1.0 specification.
+    SysEx has no MIDI channel and no single fixed USB-MIDI Code Index
+    Number, so it intentionally does not implement the `Message`
+    interface (`cin()`) and is not a subclass of `Message`. A caller
+    using a USB-MIDI Event Packet transport must split `to_bytes()` into
+    3-byte chunks and select the CIN per chunk directly: 0x4 for
+    start/continue packets, and 0x5, 0x6, or 0x7 for the final packet
+    depending on whether it ends with 1, 2, or 3 bytes, per the USB MIDI
+    1.0 specification.
     """
 
-    def __init__(self, channel: int, data: list) -> None:
-        super().__init__(channel)
+    def __init__(self, data: list) -> None:
         self.data: list = list(data)
         for byte in self.data:
             if not 0 <= byte <= 127:
@@ -285,5 +322,5 @@ class SysEx(Message):
     def to_bytes(self) -> list:
         return [_SYSEX_START] + self.data + [_SYSEX_END]
 
-    def cin(self) -> None:
-        return None
+    def __repr__(self) -> str:
+        return "<SysEx bytes=%s>" % (self.to_bytes(),)
