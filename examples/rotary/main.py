@@ -1,8 +1,8 @@
 import utime as time
-from lib_common.rotary import Rotary, RotaryEvent
+from utils.ky040 import KY040, RotaryEvent
 from machine import Pin
 
-rotary = Rotary(dt_pin=2, clk_pin=3)
+rotary = KY040(dt_pin=2, clk_pin=3)
 
 while True:
     evt = rotary.consume()

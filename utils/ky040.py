@@ -1,5 +1,5 @@
 """
-rotary.py
+ky040.py
 
 Quadrature-transition based KY-040 rotary encoder driver for MicroPython
 (Raspberry Pi Pico or any board with machine.Pin IRQ support).
@@ -36,31 +36,20 @@ from machine import Pin
 
 
 class RotaryEvent:
-    """
-    Namespace of direction constants returned by Rotary.consume().
-
-    Kept as a separate class (rather than attributes on Rotary) so that
-    the return type of Rotary.consume() can be described independently
-    of the encoder driver itself.
-    """
+    """Namespace of direction constants returned by Rotary.consume()."""
 
     NONE = 0  # no event since the last consume()
     CW = 1  # clockwise step
     CCW = 2  # counter-clockwise step
 
 
-class Rotary:
+class KY040:
     """
     KY-040 rotary encoder reader using a quadrature transition table.
 
     Only tracks the most recent direction event. Call consume() to fetch
     and clear it. If multiple steps occur between consume() calls, only
     the latest one is kept (no queueing).
-
-    dt_pin and clk_pin must be pre-constructed machine.Pin objects,
-    already configured as inputs (Pin.IN) with whatever pull mode you
-    want. This keeps pin setup/ownership with the caller rather than
-    the Rotary class.
     """
 
     # Transition table values, expressed as (last_status << 2) | new_status
@@ -70,8 +59,8 @@ class Rotary:
     def __init__(self, dt_pin: int, clk_pin: int, pull: int = Pin.PULL_UP) -> None:
         """
         Args:
-            dt_pin (int): DT pin number
-            clk_pin (int): CLK pin number
+            dt_pin (int): DT pin ID number
+            clk_pin (int): CLK pin ID number
             pull (int, optional): Can be Pin.PULL_UP, Pin.PULL_DOWN or None
         """
         self._dt_pin = Pin(dt_pin, Pin.IN, pull)
