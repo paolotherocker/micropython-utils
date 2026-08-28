@@ -29,10 +29,6 @@ class KY040:
     Only tracks the most recent direction event. Call consume() to fetch
     and clear it. If multiple steps occur between consume() calls, only
     the latest one is kept (no queueing).
-
-    A software debounce window discards IRQ-triggered pin reads that
-    occur too soon after the last accepted one, filtering contact bounce
-    without adding perceptible lag to normal turning speed.
     """
 
     # Transition table values, expressed as (last_status << 2) | new_status
