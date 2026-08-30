@@ -1,9 +1,25 @@
 {
     "urls": [
-        ["utils/__init__.py", "utils/__init__.py"],
-        ["utils/button.py", "utils/button.py"],
-        ["utils/rotary.py", "utils/rotary.py"],
-        ["utils/neopixelmanager.py", "utils/neopixelmanager.py"]
+        [
+            "utils/__init__.py",
+            "utils/__init__.py"
+        ],
+        [
+            "utils/button.py",
+            "utils/button.py"
+        ],
+        [
+            "utils/ky040.py",
+            "utils/ky040.py"
+        ],
+        [
+            "utils/midi.py",
+            "utils/midi.py"
+        ],
+        [
+            "utils/neopixelmanager.py",
+            "utils/neopixelmanager.py"
+        ]
     ],
     "version": "0.1.0"
 }
