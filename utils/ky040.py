@@ -11,7 +11,7 @@ direction. Type enforcement is done manually since MicroPython has no
 See ../examples/ky040/main.py for usage
 """
 
-from machine import Pin
+from machine import Pin, disable_irq, enable_irq
 import utime as time
 
 
@@ -26,7 +26,7 @@ class RotaryEvent:
 class KY040:
     """Quadrature-transition based KY-040 rotary encoder reader."""
 
-    # Transition table values, expressed as (last_status << 2) | new_status
+    # Transition table values, expressed as (committed_status << 2) | new_status
     _TRANSITION_CW = 0b1110
     _TRANSITION_CCW = 0b1101
 
@@ -48,18 +48,18 @@ class KY040:
         self._clk_pin = Pin(clk_pin, Pin.IN, pull)
         self._debounce_ms = debounce_ms
 
-        self._last_status = self._read_status()
-        self._last_event = RotaryEvent.NONE
-        self._last_change_ms = time.ticks_ms()
+        initial_status = self._read_status()
+        self._committed_status = initial_status  # last status consume() has acted on
+        self._last_edge_status = initial_status  # latest raw status seen by the IRQ
+        self._last_edge_ms = time.ticks_ms()  # restarts on every edge (debounce timer)
+        self._pending_event = RotaryEvent.NONE
 
         self._dt_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
         self._clk_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
 
     def _read_status(self) -> int:
         """Pack DT/CLK pin levels into a 2-bit int: (dt << 1) | clk."""
-        dt_val = self._dt_pin.value()
-        clk_val = self._clk_pin.value()
-        return (dt_val << 1) | clk_val
+        return (self._dt_pin.value() << 1) | self._clk_pin.value()
 
     def _on_pin_change(self, pin: Pin) -> None:
         """IRQ handler for both DT and CLK pins.
@@ -67,24 +67,8 @@ class KY040:
         Args:
             pin (Pin): the pin that triggered the interrupt.
         """
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_change_ms) < self._debounce_ms:
-            return
-
-        new_status = self._read_status()
-        if new_status == self._last_status:
-            return
-
-        transition = (self._last_status << 2) | new_status
-
-        if transition == self._TRANSITION_CW:
-            self._last_event = RotaryEvent.CW
-        elif transition == self._TRANSITION_CCW:
-            self._last_event = RotaryEvent.CCW
-        # any other transition value is a bounce/invalid step; ignored
-
-        self._last_status = new_status
-        self._last_change_ms = now
+        self._last_edge_status = self._read_status()
+        self._last_edge_ms = time.ticks_ms()
 
     def consume(self) -> RotaryEvent:
         """Return and clear the most recent rotary event.
@@ -92,6 +76,27 @@ class KY040:
         Returns:
             RotaryEvent: NONE, CW, or CCW.
         """
-        event = self._last_event
-        self._last_event = RotaryEvent.NONE
+        now = time.ticks_ms()
+
+        irq_state = disable_irq()
+        edge_status = self._last_edge_status
+        edge_ms = self._last_edge_ms
+        enable_irq(irq_state)
+
+        if (
+            edge_status != self._committed_status
+            and time.ticks_diff(now, edge_ms) >= self._debounce_ms
+        ):
+            transition = (self._committed_status << 2) | edge_status
+
+            if transition == self._TRANSITION_CW:
+                self._pending_event = RotaryEvent.CW
+            elif transition == self._TRANSITION_CCW:
+                self._pending_event = RotaryEvent.CCW
+            # any other transition value is a bounce/invalid step; ignored
+
+            self._committed_status = edge_status
+
+        event = self._pending_event
+        self._pending_event = RotaryEvent.NONE
         return event
