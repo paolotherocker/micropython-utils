@@ -26,9 +26,16 @@ class RotaryEvent:
 class KY040:
     """Quadrature-transition based KY-040 rotary encoder reader."""
 
-    # Transition table values, expressed as (committed_status << 2) | new_status
-    _TRANSITION_CW = 0b1110
-    _TRANSITION_CCW = 0b1101
+    # Position of each raw 2-bit (dt << 1 | clk) status along the
+    # natural Gray-code sequence 00 -> 01 -> 11 -> 10 -> 00. Any two
+    # consecutive positions differ by exactly one physical quarter-step,
+    # in either direction, from any starting status -- not just from a
+    # single hardcoded rest state.
+    _RING_POSITION = (0, 1, 3, 2)
+
+    # Quarter-steps per detent. One CW/CCW event fires once the signed
+    # accumulator reaches +-_STEPS_PER_DETENT.
+    _STEPS_PER_DETENT = 4
 
     def __init__(
         self,
@@ -52,6 +59,7 @@ class KY040:
         self._committed_status = initial_status  # last status consume() has acted on
         self._last_edge_status = initial_status  # latest raw status seen by the IRQ
         self._last_edge_ms = time.ticks_ms()  # restarts on every edge (debounce timer)
+        self._accumulator = 0  # signed quarter-step count since the last detent
         self._pending_event = RotaryEvent.NONE
 
         self._dt_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
@@ -87,13 +95,24 @@ class KY040:
             edge_status != self._committed_status
             and time.ticks_diff(now, edge_ms) >= self._debounce_ms
         ):
-            transition = (self._committed_status << 2) | edge_status
+            old_pos = self._RING_POSITION[self._committed_status]
+            new_pos = self._RING_POSITION[edge_status]
+            delta = (new_pos - old_pos) % 4
 
-            if transition == self._TRANSITION_CW:
+            if delta == 1:
+                self._accumulator += 1
+            elif delta == 3:
+                self._accumulator -= 1
+            # delta == 0 can't occur here (statuses differ); delta == 2
+            # means two quarter-steps were skipped, which is direction-
+            # ambiguous from a single jump, so it's left uncounted.
+
+            if self._accumulator >= self._STEPS_PER_DETENT:
                 self._pending_event = RotaryEvent.CW
-            elif transition == self._TRANSITION_CCW:
+                self._accumulator = 0
+            elif self._accumulator <= -self._STEPS_PER_DETENT:
                 self._pending_event = RotaryEvent.CCW
-            # any other transition value is a bounce/invalid step; ignored
+                self._accumulator = 0
 
             self._committed_status = edge_status
 
