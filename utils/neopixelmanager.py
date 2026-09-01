@@ -2,64 +2,11 @@
 strip into independently-addressable pixel groups and apply animated
 Patterns to each group.
 
-NeoPixelManager methods:
-- add_subset(length=None) -> register a contiguous block of pixels,
-  returns an id. length=None claims all pixels not yet claimed.
-- set_pattern(pattern, id=None) -> apply a Pattern to a subset (id=None
-  targets pixels not claimed by any subset). Replaces any pattern
-  already on that id.
-- clear_patterns() -> remove all patterns; pixels left as-is.
-- clear() -> clear_patterns() + blank every pixel; subsets stay valid.
-- reset() -> clear() + forget the subset structure entirely.
-- update() -> recompute animated patterns' colours (does not write()).
-- poll() -> update() then write().
+Colour tuples are plain (r, g, b) or (r, g, b, w) tuples; mismatched
+lengths are padded or truncated automatically. Type hints use only
+builtin types since MicroPython has no `typing` module.
 
-Pattern classes:
-- Pattern -> base class; implement get_pixel_color(pixel_index,
-  num_pixels, elapsed_ms, bpp).
-- Solid(color) -> static colour.
-- Off() -> blanks the subset (all channels zero).
-- Pulse(color1, color2, period_ms, phase_deg=0) -> sine-wave breathing
-  pulse between two colours.
-- Flash(color1, color2=(0, 0, 0), period_ms=200, duty=0.5, repeats=None,
-  phase_deg=0) -> square-wave on/off flash.
-- Wave(color1, color2, period_ms, phase_deg=0, spread=None) -> a
-  Gaussian "comet" that travels along the subset in a loop.
-
-Colour tuples are plain (r, g, b) or (r, g, b, w) tuples. Mismatched
-lengths (e.g. RGB vs RGBW) are padded with zeros or truncated
-automatically -- see `_normalize_color()`.
-
-Type hints use only builtin types since MicroPython has no `typing`
-module and doesn't support subscripting builtin generics.
-
-Example, NeoPixels on GPIO 4:
-
-    from machine import Pin
-    from neopixelmanager import NeoPixelManager, Solid, Off, Pulse, Wave
-    import time
-
-    np = NeoPixelManager(Pin(4), 30)
-    np.reset()
-
-    id_a = np.add_subset(8)   # pixels 0-7
-    id_b = np.add_subset(16)  # pixels 8-23
-
-    np.set_pattern(Solid((0, 0, 255)), id=id_a)
-    np.set_pattern(
-        Wave((255, 0, 0), (0, 0, 0), period_ms=2000, spread=2.5), id=id_b
-    )
-    np.set_pattern(Solid((0, 255, 0)), id=None)  # pixels 24-29
-
-    np.write()
-
-    while True:
-        np.poll()
-        time.sleep_ms(20)
-
-    np.set_pattern(Off(), id=id_b)
-    np.clear()  # subsets 0 and 1 still valid
-    np.reset()  # subsets forgotten too
+See ../examples/neopixelmanager/main.py for usage.
 """
 
 import time
@@ -74,9 +21,12 @@ from machine import Pin
 def _normalize_color(color: tuple, length: int) -> tuple:
     """Pad or truncate a colour tuple to exactly `length` channels.
 
-    Missing trailing channels are filled with 0; extra channels are
-    dropped. Lets callers freely mix RGB/RGBW tuples with each other or
-    with a strip of a different `bpp`.
+    Args:
+        color (tuple): source colour tuple.
+        length (int): target number of channels.
+
+    Returns:
+        tuple: colour tuple with exactly `length` channels.
     """
     n: int = len(color)
     if n == length:
@@ -87,10 +37,16 @@ def _normalize_color(color: tuple, length: int) -> tuple:
 
 
 def _interp(color1: tuple, color2: tuple, t: float, length: int) -> tuple:
-    """Linearly interpolate between two colours at fraction t in [0, 1].
+    """Linearly interpolate between two colours.
 
-    Both colours are normalised to `length` channels first, so color1 and
-    color2 need not match each other's length or `length`.
+    Args:
+        color1 (tuple): colour at t = 0.
+        color2 (tuple): colour at t = 1.
+        t (float): interpolation fraction in [0, 1].
+        length (int): number of channels in the result.
+
+    Returns:
+        tuple: interpolated colour with `length` channels.
     """
     c1: tuple = _normalize_color(color1, length)
     c2: tuple = _normalize_color(color2, length)
@@ -106,14 +62,16 @@ _MIN_SPREAD: float = 0.05  # smallest allowed Wave `spread`, in pixels
 class Pattern:
     """Base class for a colour pattern applied to a subset of pixels.
 
-    Subclass and implement `get_pixel_color()`. Override `is_animated()`
-    to return True if the pattern must be recomputed on every `update()`
-    (e.g. anything time-based); static patterns are only rendered once,
-    when `set_pattern()` is called.
+    Subclass and implement `get_pixel_color()`; override `is_animated()`
+    for time-based patterns.
     """
 
     def is_animated(self) -> bool:
-        """Return True if this pattern must be recomputed every update()."""
+        """Return True if this pattern must be recomputed every update().
+
+        Returns:
+            bool
+        """
         return False
 
     def get_pixel_color(
@@ -122,13 +80,16 @@ class Pattern:
         """Return the colour for one pixel in the subset.
 
         Args:
-            pixel_index (int): 0-indexed position within the subset (not
-                the strip). Patterns that colour every pixel the same can
-                ignore this.
+            pixel_index (int): 0-indexed position within the subset.
             num_pixels (int): total number of pixels in the subset.
             elapsed_ms (int): milliseconds since set_pattern() was called.
-            bpp (int): 3 for RGB, 4 for RGBW; the returned tuple must have
-                this many channels (see `_normalize_color()`).
+            bpp (int): number of colour channels (3 for RGB, 4 for RGBW).
+
+        Returns:
+            tuple: colour with `bpp` channels.
+
+        Raises:
+            NotImplementedError: always, unless overridden by a subclass.
         """
         raise NotImplementedError
 
@@ -150,11 +111,7 @@ class Solid(Pattern):
 
 
 class Off(Pattern):
-    """Blanks the subset (all channels zero).
-
-    Also the way to stop/forget whatever pattern was previously running
-    on a subset -- there is no separate "remove" call.
-    """
+    """Blanks the subset (all channels zero)."""
 
     def get_pixel_color(
         self, pixel_index: int, num_pixels: int, elapsed_ms: int, bpp: int
@@ -174,11 +131,10 @@ class Pulse(Pattern):
     ) -> None:
         """
         Args:
-            color1 (tuple): colour at the trough (t = 0).
-            color2 (tuple): colour at the peak (t = 1).
-            period_ms (int): full color1 -> color2 -> color1 cycle length.
-            phase_deg (float, optional): phase offset in degrees, so
-                multiple pulses can run out of sync.
+            color1 (tuple): colour at the trough.
+            color2 (tuple): colour at the peak.
+            period_ms (int): full cycle length, in milliseconds.
+            phase_deg (float, optional): phase offset in degrees.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -213,15 +169,12 @@ class Flash(Pattern):
             color1 (tuple): colour during the "on" phase.
             color2 (tuple, optional): colour during the "off" phase.
                 Defaults to black.
-            period_ms (int, optional): full on+off cycle length.
+            period_ms (int, optional): full on+off cycle length, in ms.
             duty (float, optional): fraction of `period_ms` spent on
-                `color1`, in (0, 1). Defaults to 0.5.
+                `color1`, in (0, 1).
             repeats (int, optional): number of on/off cycles to run.
-                None (default) flashes indefinitely; once exhausted, the
-                pattern holds on `color2` (call set_pattern() again to
-                change it).
-            phase_deg (float, optional): phase offset in degrees, so
-                multiple subsets can flash out of sync.
+                None (default) flashes indefinitely.
+            phase_deg (float, optional): phase offset in degrees.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -248,14 +201,7 @@ class Flash(Pattern):
 
 
 class Wave(Pattern):
-    """A Gaussian "comet" that travels along the subset in a loop.
-
-    Same constructor as Pulse, plus `spread`. Only one pixel -- the
-    current peak -- is fully at color2; pixels either side fade towards
-    color1 following a Gaussian curve, and the peak position advances
-    continuously along the subset, wrapping back to the start once it
-    reaches the end.
-    """
+    """A Gaussian "comet" that travels along the subset in a loop."""
 
     def __init__(
         self,
@@ -269,16 +215,10 @@ class Wave(Pattern):
         Args:
             color1 (tuple): colour pixels fade towards, away from the peak.
             color2 (tuple): colour of the current peak pixel.
-            period_ms (int): time for the peak to complete one full pass
-                along the subset and wrap back to the start.
-            phase_deg (float, optional): phase offset in degrees, so
-                multiple subsets can run the wave out of sync.
-            spread (float, optional): how many pixels either side of the
-                peak the glow extends over (the Gaussian sigma, in
-                pixels). Defaults to None, auto-scaling to roughly a
-                sixth of the subset's pixel count (min 0.6px). Values
-                <= 0 are clamped to a small positive floor (`_MIN_SPREAD`)
-                rather than raising an error or dividing by zero.
+            period_ms (int): time for the peak to complete one full pass.
+            phase_deg (float, optional): phase offset in degrees.
+            spread (float, optional): Gaussian sigma, in pixels. Defaults
+                to roughly a sixth of the subset's pixel count.
         """
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
@@ -332,7 +272,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             pin_id (int): machine pin ID.
             n (int): number of LEDs in the array.
             bpp (int, optional): 3 for RGB LEDs, 4 for RGBW LEDs.
-            timing (int, optional): 0 for 400KHz, 1 for 800kHz (most LEDs).
+            timing (int, optional): 0 for 400kHz, 1 for 800kHz (most LEDs).
         """
         super().__init__(Pin(pin_id), n, bpp, timing)
         self._subsets: dict = {}  # id -> (start, length)
@@ -346,15 +286,12 @@ class NeoPixelManager(neopixel.NeoPixel):
     def add_subset(self, length: int = None) -> int:
         """Register a contiguous block of pixels for later addressing.
 
-        The block starts wherever the previous subset left off.
-
         Args:
             length (int, optional): number of pixels to claim; None
                 claims every pixel not yet owned by an earlier subset.
 
         Returns:
-            int: auto-generated id (0, 1, 2, ...) for use with
-            set_pattern().
+            int: auto-generated subset id.
         """
         n: int = len(self)
         start: int = self._cursor
@@ -370,7 +307,15 @@ class NeoPixelManager(neopixel.NeoPixel):
     def _resolve_range(self, subset_id: int) -> tuple:
         """Translate a subset id (or None) into a (start, length) tuple.
 
-        None maps to whatever pixels remain unclaimed by any subset.
+        Args:
+            subset_id (int): id from add_subset(), or None for pixels
+                unclaimed by any subset.
+
+        Returns:
+            tuple: (start, length).
+
+        Raises:
+            KeyError: if `subset_id` does not exist.
         """
         if subset_id is None:
             n: int = len(self)
@@ -384,10 +329,7 @@ class NeoPixelManager(neopixel.NeoPixel):
     # Basic pixel operations
     # ------------------------------------------------------------------
     def clear(self) -> None:
-        """Stop all patterns and blank every pixel; subsets stay valid.
-
-        Call write() afterwards to push the change to the physical strip.
-        """
+        """Stop all patterns and blank every pixel; subsets stay valid."""
         self.clear_patterns()
         off: tuple = (0,) * self.bpp
         n: int = len(self)
@@ -395,11 +337,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             self[i] = off
 
     def reset(self) -> None:
-        """Like clear(), but also forgets the subset structure entirely.
-
-        add_subset() must be called again afterwards to re-establish ids.
-        Call write() afterwards to push the change to the physical strip.
-        """
+        """Like clear(), but also forgets the subset structure entirely."""
         self.clear()
         self._subsets = {}
         self._next_subset_id = 0
@@ -412,14 +350,15 @@ class NeoPixelManager(neopixel.NeoPixel):
         """Attach a Pattern to a subset, replacing any pattern already there.
 
         Args:
-            pattern (Pattern): a Solid, Off, Pulse, Flash, Wave (or custom
-                Pattern subclass) instance. To stop a subset's pattern,
-                call this again with Off().
+            pattern (Pattern): pattern instance to render.
             id (int, optional): id from add_subset(); None targets pixels
                 not yet claimed by any subset.
 
         Returns:
-            int: the id this pattern is attached to (echoes `id`).
+            int: the id this pattern is attached to.
+
+        Raises:
+            KeyError: if `id` does not exist.
         """
         start, length = self._resolve_range(id)
 
@@ -438,7 +377,12 @@ class NeoPixelManager(neopixel.NeoPixel):
         self._patterns.clear()
 
     def _render(self, entry: dict, elapsed_ms: int) -> None:
-        """Write a pattern entry's colours into the pixel buffer."""
+        """Write a pattern entry's colours into the pixel buffer.
+
+        Args:
+            entry (dict): pattern state dict (pattern, start, length, t0).
+            elapsed_ms (int): milliseconds since the pattern was set.
+        """
         pattern: Pattern = entry["pattern"]
         n: int = len(self)
         first: int = max(0, entry["start"])
@@ -449,12 +393,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             self[i] = pattern.get_pixel_color(offset, length, elapsed_ms, self.bpp)
 
     def update(self) -> None:
-        """Recompute every animated pattern's colours from elapsed time.
-
-        Static patterns (Solid, Off) were already rendered once by
-        set_pattern(), so they're skipped here. Does NOT call write() --
-        use poll() for that, or call write() yourself afterwards.
-        """
+        """Recompute every animated pattern's colours from elapsed time."""
         now: int = time.ticks_ms()
 
         for entry in self._patterns.values():
@@ -465,6 +404,6 @@ class NeoPixelManager(neopixel.NeoPixel):
             self._render(entry, elapsed)
 
     def poll(self) -> None:
-        """Convenience helper: update() all patterns then push to the strip."""
+        """Recompute animated patterns and push the result to the strip."""
         self.update()
         self.write()

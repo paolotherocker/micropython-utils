@@ -4,10 +4,11 @@ ky040.py
 Quadrature-transition based KY-040 rotary encoder driver for MicroPython
 (Raspberry Pi Pico or any board with machine.Pin IRQ support).
 
-No switch (SW) handling is included -- this module only reports rotation
-direction. No external libraries are used beyond `machine`/`utime`, so type
-enforcement is done manually via isinstance() checks and plain int
-constants (MicroPython has no `enum` module in the base build).
+No switch (SW) handling is included; this module only reports rotation
+direction. Type enforcement is done manually since MicroPython has no
+`enum` module in the base build.
+
+See ../examples/ky040/main.py for usage
 """
 
 from machine import Pin
@@ -15,7 +16,7 @@ import utime as time
 
 
 class RotaryEvent:
-    """Namespace of direction constants returned by KY040.consume()."""
+    """Namespace of rotary direction constants."""
 
     NONE = 0  # no event since the last consume()
     CW = 1  # clockwise step
@@ -23,13 +24,7 @@ class RotaryEvent:
 
 
 class KY040:
-    """
-    KY-040 rotary encoder reader using a quadrature transition table.
-
-    Only tracks the most recent direction event. Call consume() to fetch
-    and clear it. If multiple steps occur between consume() calls, only
-    the latest one is kept (no queueing).
-    """
+    """Quadrature-transition based KY-040 rotary encoder reader."""
 
     # Transition table values, expressed as (last_status << 2) | new_status
     _TRANSITION_CW = 0b1110
@@ -44,10 +39,10 @@ class KY040:
     ) -> None:
         """
         Args:
-            dt_pin (int): DT pin ID number
-            clk_pin (int): CLK pin ID number
-            pull (int, optional): Can be Pin.PULL_UP, Pin.PULL_DOWN or None
-            debounce_ms (int, optional): debounce time in ms
+            dt_pin (int): DT pin ID number.
+            clk_pin (int): CLK pin ID number.
+            pull (int, optional): Pin.PULL_UP, Pin.PULL_DOWN, or None.
+            debounce_ms (int, optional): Debounce time in ms.
         """
         self._dt_pin = Pin(dt_pin, Pin.IN, pull)
         self._clk_pin = Pin(clk_pin, Pin.IN, pull)
@@ -67,7 +62,11 @@ class KY040:
         return (dt_val << 1) | clk_val
 
     def _on_pin_change(self, pin: Pin) -> None:
-        """IRQ handler for both DT and CLK pins. Updates the pending event."""
+        """IRQ handler for both DT and CLK pins.
+
+        Args:
+            pin (Pin): the pin that triggered the interrupt.
+        """
         now = time.ticks_ms()
         if time.ticks_diff(now, self._last_change_ms) < self._debounce_ms:
             return
@@ -88,9 +87,10 @@ class KY040:
         self._last_change_ms = now
 
     def consume(self) -> RotaryEvent:
-        """
-        Return the most recent RotaryEvent (NONE, CW, or CCW) and reset
-        the stored event back to NONE.
+        """Return and clear the most recent rotary event.
+
+        Returns:
+            RotaryEvent: NONE, CW, or CCW.
         """
         event = self._last_event
         self._last_event = RotaryEvent.NONE
