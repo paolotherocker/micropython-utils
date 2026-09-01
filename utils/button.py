@@ -46,7 +46,7 @@ class Button(Pin):
 
     def __init__(
         self,
-        id,
+        pin_id,
         pull: int = Pin.PULL_UP,
         *,
         debounce_ms: int = 30,
@@ -54,7 +54,7 @@ class Button(Pin):
     ):
         """
         Args:
-            id: Pin identifier, as accepted by `machine.Pin`.
+            pin_id: Pin identifier, as accepted by `machine.Pin`.
             pull: Pull resistor configuration (`Pin.PULL_UP`,
                 `Pin.PULL_DOWN`, or `None`).
             debounce_ms: Minimum time, in milliseconds, the pin must
@@ -63,7 +63,7 @@ class Button(Pin):
             long_press_ms: Minimum hold duration, in milliseconds,
                 required for a press to be classified as a long press.
         """
-        super().__init__(id, Pin.IN, pull)
+        super().__init__(pin_id, Pin.IN, pull)
         self.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, handler=self._on_irq)
         self._debounce_ms = debounce_ms
         self._long_press_ms = long_press_ms
