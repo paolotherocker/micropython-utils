@@ -2,8 +2,9 @@
 midi.py
 
 MIDI message library for a MicroPython instance. Provides a `Message`
-class hierarchy, a `SysEx` type, and `MidiUsb`/`MidiUart` output classes
-sharing a `send_message()` / `send_sysex()` API.
+class hierarchy, a `SystemRealtime` family, a `SysEx` type, and
+`MidiUsb`/`MidiUart` output classes sharing `send_message()` /
+`send_realtime()` / `send_sysex()` APIs.
 
 `MidiUsb` requires `mpremote mip install usb-device-midi` on firmware
 with `usb.device` support. `MidiUart` requires only `machine`. Both are
@@ -290,27 +291,19 @@ class PitchBend(Message):
         return _PITCH_BEND
 
 
-class SystemRealtime(Message):
+class SystemRealtime:
     """Base class for single-byte MIDI system realtime messages."""
 
     _STATUS = None
-
-    def __init__(self, channel: int) -> None:
-        """
-        Args:
-            channel: Unused; kept for a consistent constructor signature
-                across all Message subclasses.
-
-        Raises:
-            ValueError: if `channel` is not in 0-15.
-        """
-        super().__init__(channel)
 
     def to_bytes(self) -> list:
         return [self._STATUS]
 
     def cin(self) -> int:
         return 0xF
+
+    def __repr__(self) -> str:
+        return "<%s bytes=%s>" % (self.__class__.__name__, list(self.to_bytes()))
 
 
 class Clock(SystemRealtime):
@@ -411,6 +404,21 @@ class MidiInterface:
             )
         self._write_message(msg)
 
+    def send_realtime(self, msg: SystemRealtime) -> None:
+        """Send a single-byte MIDI system realtime message.
+
+        Args:
+            msg: A `SystemRealtime` instance.
+
+        Raises:
+            TypeError: if `msg` is not a `SystemRealtime` instance.
+        """
+        if not isinstance(msg, SystemRealtime):
+            raise TypeError(
+                "send_realtime() expects a SystemRealtime instance, got %r" % (msg,)
+            )
+        self._write_realtime(msg)
+
     def send_sysex(self, msg: SysEx) -> None:
         """Send a SysEx message.
 
@@ -429,6 +437,17 @@ class MidiInterface:
 
         Args:
             msg: A `Message` instance.
+
+        Raises:
+            NotImplementedError: always, unless overridden by a subclass.
+        """
+        raise NotImplementedError
+
+    def _write_realtime(self, msg: SystemRealtime) -> None:
+        """Write a validated SystemRealtime message to the backend.
+
+        Args:
+            msg: A `SystemRealtime` instance.
 
         Raises:
             NotImplementedError: always, unless overridden by a subclass.
@@ -498,6 +517,14 @@ class MidiUsb(MidiInterface):
 
         Args:
             msg: A `Message` instance.
+        """
+        self._interface.send_event(msg.cin(), *msg.to_bytes())
+
+    def _write_realtime(self, msg: SystemRealtime) -> None:
+        """Write a validated SystemRealtime message as a USB-MIDI Event Packet.
+
+        Args:
+            msg: A `SystemRealtime` instance.
         """
         self._interface.send_event(msg.cin(), *msg.to_bytes())
 
@@ -573,6 +600,14 @@ class MidiUart(MidiInterface):
 
         Args:
             msg: A `Message` instance.
+        """
+        self._uart.write(bytes(msg.to_bytes()))
+
+    def _write_realtime(self, msg: SystemRealtime) -> None:
+        """Write a validated SystemRealtime message as raw MIDI bytes.
+
+        Args:
+            msg: A `SystemRealtime` instance.
         """
         self._uart.write(bytes(msg.to_bytes()))
 
