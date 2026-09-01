@@ -20,11 +20,13 @@ while True:
         led.off()
 
     if button_event != ButtonEvent.NONE:
-        if button_event == ButtonEvent.PRESSED:
+        if button_event == ButtonEvent.PRESS:
             print("pressed")
-        elif button_event == ButtonEvent.SHORT_PRESS:
-            print("short")
+        elif button_event == ButtonEvent.SHORT_RELEASE:
+            print("short release")
         elif button_event == ButtonEvent.LONG_PRESS:
-            print("long")
+            print("long press")
+        elif button_event == ButtonEvent.LONG_RELEASE:
+            print("long release")
 
-    time.sleep_ms(10)
+    time.sleep_ms(1)
