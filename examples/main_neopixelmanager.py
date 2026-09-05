@@ -1,4 +1,3 @@
-from machine import Pin
 from utils.neopixelmanager import NeoPixelManager, Pulse, Wave
 import time
 
@@ -13,15 +12,14 @@ np.write()
 np.add_subset(8)
 np.add_subset(8)
 
-# Trigger a pulse across all 16 pixels, breathing between red and off,
-# once every 2 seconds.
+# Pulse the first 8 pixels, breathing between two blues, once every 2 seconds.
 np.set_pattern(
     Pulse(
         color1=(0, 32, 50),
         color2=(0, 64, 255),
         period_ms=2000,
     ),
-    id=0,
+    subset_id=0,
 )
 
 np.set_pattern(
@@ -30,7 +28,7 @@ np.set_pattern(
         color2=(0, 255, 96),
         period_ms=2000,
     ),
-    id=1,
+    subset_id=1,
 )
 
 print("Pulsing... press Ctrl+C to stop")

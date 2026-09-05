@@ -66,6 +66,14 @@ class Pattern:
     for time-based patterns.
     """
 
+    def __init__(self) -> None:
+        """
+        Raises:
+            TypeError: if instantiated directly instead of subclassed.
+        """
+        if type(self) is Pattern:
+            raise TypeError("Pattern is abstract; subclass it instead")
+
     def is_animated(self) -> bool:
         """Return True if this pattern must be recomputed every update().
 
@@ -135,7 +143,12 @@ class Pulse(Pattern):
             color2 (tuple): colour at the peak.
             period_ms (int): full cycle length, in milliseconds.
             phase_deg (float, optional): phase offset in degrees.
+
+        Raises:
+            ValueError: if `period_ms` is not > 0.
         """
+        if period_ms <= 0:
+            raise ValueError("period_ms must be > 0")
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
         self.period_ms: int = period_ms
@@ -175,7 +188,12 @@ class Flash(Pattern):
             repeats (int, optional): number of on/off cycles to run.
                 None (default) flashes indefinitely.
             phase_deg (float, optional): phase offset in degrees.
+
+        Raises:
+            ValueError: if `period_ms` is not > 0.
         """
+        if period_ms <= 0:
+            raise ValueError("period_ms must be > 0")
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
         self.period_ms: int = period_ms
@@ -219,7 +237,12 @@ class Wave(Pattern):
             phase_deg (float, optional): phase offset in degrees.
             spread (float, optional): Gaussian sigma, in pixels. Defaults
                 to roughly a sixth of the subset's pixel count.
+
+        Raises:
+            ValueError: if `period_ms` is not > 0.
         """
+        if period_ms <= 0:
+            raise ValueError("period_ms must be > 0")
         self.color1: tuple = tuple(color1)
         self.color2: tuple = tuple(color2)
         self.period_ms: int = period_ms
@@ -263,8 +286,12 @@ class Wave(Pattern):
 # ----------------------------------------------------------------------
 # NeoPixelManager
 # ----------------------------------------------------------------------
-class NeoPixelManager(neopixel.NeoPixel):
-    """NeoPixel strip with named pixel subsets and per-subset Patterns."""
+class NeoPixelManager:
+    """NeoPixel strip with named pixel subsets and per-subset Patterns.
+
+    Wraps a `neopixel.NeoPixel` instance internally (composition, not
+    inheritance) and forwards pixel indexing and `write()` to it.
+    """
 
     def __init__(self, pin_id: int, n: int, bpp: int = 3, timing: int = 1) -> None:
         """
@@ -273,12 +300,39 @@ class NeoPixelManager(neopixel.NeoPixel):
             n (int): number of LEDs in the array.
             bpp (int, optional): 3 for RGB LEDs, 4 for RGBW LEDs.
             timing (int, optional): 0 for 400kHz, 1 for 800kHz (most LEDs).
+
+        Raises:
+            ValueError: if `n` is not positive, `bpp` is not 3 or 4, or
+                `timing` is not 0 or 1.
         """
-        super().__init__(Pin(pin_id), n, bpp, timing)
+        if n <= 0:
+            raise ValueError("n must be a positive pixel count")
+        if bpp not in (3, 4):
+            raise ValueError("bpp must be 3 (RGB) or 4 (RGBW)")
+        if timing not in (0, 1):
+            raise ValueError("timing must be 0 (400kHz) or 1 (800kHz)")
+        self._strip: neopixel.NeoPixel = neopixel.NeoPixel(Pin(pin_id), n, bpp, timing)
+        self.bpp: int = bpp
         self._subsets: dict = {}  # id -> (start, length)
         self._next_subset_id: int = 0
         self._cursor: int = 0  # first pixel not yet claimed by a subset
         self._patterns: dict = {}  # id (or None) -> pattern state dict
+
+    # ------------------------------------------------------------------
+    # Strip passthrough
+    # ------------------------------------------------------------------
+    def __len__(self) -> int:
+        return len(self._strip)
+
+    def __getitem__(self, index: int) -> tuple:
+        return self._strip[index]
+
+    def __setitem__(self, index: int, value: tuple) -> None:
+        self._strip[index] = value
+
+    def write(self) -> None:
+        """Push the current pixel buffer to the physical strip."""
+        self._strip.write()
 
     # ------------------------------------------------------------------
     # Subset management
@@ -292,17 +346,53 @@ class NeoPixelManager(neopixel.NeoPixel):
 
         Returns:
             int: auto-generated subset id.
+
+        Raises:
+            ValueError: if `length` is negative, or exceeds the pixels
+                remaining on the strip.
         """
+        if length is not None and length < 0:
+            raise ValueError("length must be >= 0")
+
         n: int = len(self)
         start: int = self._cursor
         if length is None:
             length = max(0, n - start)
+        elif start + length > n:
+            raise ValueError(
+                f"length {length} exceeds the {n - start} pixel(s) "
+                f"remaining on the strip"
+            )
 
         subset_id: int = self._next_subset_id
         self._next_subset_id += 1
         self._subsets[subset_id] = (start, length)
         self._cursor = min(n, start + length)
         return subset_id
+
+    def remaining_pixels(self) -> int:
+        """Return the number of pixels not yet claimed by any subset.
+
+        Returns:
+            int: pixel count available to a future add_subset() call.
+        """
+        return max(0, len(self) - self._cursor)
+
+    def subset_length(self, subset_id: int) -> int:
+        """Return the number of pixels in a subset.
+
+        Args:
+            subset_id (int): id from add_subset(), or None for pixels
+                unclaimed by any subset.
+
+        Returns:
+            int: subset length in pixels.
+
+        Raises:
+            KeyError: if `subset_id` does not exist.
+        """
+        _, length = self._resolve_range(subset_id)
+        return length
 
     def _resolve_range(self, subset_id: int) -> tuple:
         """Translate a subset id (or None) into a (start, length) tuple.
@@ -323,6 +413,11 @@ class NeoPixelManager(neopixel.NeoPixel):
             length: int = max(0, n - start)
             return start, length
 
+        if subset_id not in self._subsets:
+            raise KeyError(
+                f"subset id {subset_id!r} does not exist; "
+                "it was never returned by add_subset()"
+            )
         return self._subsets[subset_id]
 
     # ------------------------------------------------------------------
@@ -346,31 +441,32 @@ class NeoPixelManager(neopixel.NeoPixel):
     # ------------------------------------------------------------------
     # Pattern support
     # ------------------------------------------------------------------
-    def set_pattern(self, pattern: Pattern, id: int = None) -> int:
+    def set_pattern(self, pattern: Pattern, subset_id: int = None) -> int:
         """Attach a Pattern to a subset, replacing any pattern already there.
 
         Args:
             pattern (Pattern): pattern instance to render.
-            id (int, optional): id from add_subset(); None targets pixels
-                not yet claimed by any subset.
+            subset_id (int, optional): id from add_subset(); None targets
+                pixels not yet claimed by any subset.
 
         Returns:
             int: the id this pattern is attached to.
 
         Raises:
-            KeyError: if `id` does not exist.
+            KeyError: if `subset_id` does not exist.
         """
-        start, length = self._resolve_range(id)
+        start, length = self._resolve_range(subset_id)
 
-        self._patterns[id] = {
+        self._patterns[subset_id] = {
             "pattern": pattern,
             "start": start,
             "length": length,
             "t0": time.ticks_ms(),
+            "dynamic": subset_id is None,
         }
 
-        self._render(self._patterns[id], elapsed_ms=0)
-        return id
+        self._render(self._patterns[subset_id], elapsed_ms=0)
+        return subset_id
 
     def clear_patterns(self) -> None:
         """Remove all registered patterns (pixels are left as-is)."""
@@ -379,10 +475,16 @@ class NeoPixelManager(neopixel.NeoPixel):
     def _render(self, entry: dict, elapsed_ms: int) -> None:
         """Write a pattern entry's colours into the pixel buffer.
 
+        The subset bound to id=None is re-resolved on every call, since
+        later add_subset() calls shrink the pool of unclaimed pixels.
+
         Args:
             entry (dict): pattern state dict (pattern, start, length, t0).
             elapsed_ms (int): milliseconds since the pattern was set.
         """
+        if entry.get("dynamic"):
+            entry["start"], entry["length"] = self._resolve_range(None)
+
         pattern: Pattern = entry["pattern"]
         n: int = len(self)
         first: int = max(0, entry["start"])
