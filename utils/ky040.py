@@ -11,7 +11,7 @@ direction. Type enforcement is done manually since MicroPython has no
 See ../examples/ky040/main.py for usage
 """
 
-from machine import Pin, disable_irq, enable_irq
+from machine import Pin
 import utime as time
 
 
@@ -26,16 +26,9 @@ class RotaryEvent:
 class KY040:
     """Quadrature-transition based KY-040 rotary encoder reader."""
 
-    # Position of each raw 2-bit (dt << 1 | clk) status along the
-    # natural Gray-code sequence 00 -> 01 -> 11 -> 10 -> 00. Any two
-    # consecutive positions differ by exactly one physical quarter-step,
-    # in either direction, from any starting status -- not just from a
-    # single hardcoded rest state.
-    _RING_POSITION = (0, 1, 3, 2)
-
-    # Quarter-steps per detent. One CW/CCW event fires once the signed
-    # accumulator reaches +-_STEPS_PER_DETENT.
-    _STEPS_PER_DETENT = 4
+    # Transition table values, expressed as (last_status << 2) | new_status
+    _TRANSITION_CW = 0b1110
+    _TRANSITION_CCW = 0b1101
 
     def __init__(
         self,
@@ -55,19 +48,18 @@ class KY040:
         self._clk_pin = Pin(clk_pin, Pin.IN, pull)
         self._debounce_ms = debounce_ms
 
-        initial_status = self._read_status()
-        self._committed_status = initial_status  # last status consume() has acted on
-        self._last_edge_status = initial_status  # latest raw status seen by the IRQ
-        self._last_edge_ms = time.ticks_ms()  # restarts on every edge (debounce timer)
-        self._accumulator = 0  # signed quarter-step count since the last detent
-        self._pending_event = RotaryEvent.NONE
+        self._last_status = self._read_status()
+        self._last_event = RotaryEvent.NONE
+        self._last_change_ms = time.ticks_ms()
 
         self._dt_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
         self._clk_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
 
     def _read_status(self) -> int:
         """Pack DT/CLK pin levels into a 2-bit int: (dt << 1) | clk."""
-        return (self._dt_pin.value() << 1) | self._clk_pin.value()
+        dt_val = self._dt_pin.value()
+        clk_val = self._clk_pin.value()
+        return (dt_val << 1) | clk_val
 
     def _on_pin_change(self, pin: Pin) -> None:
         """IRQ handler for both DT and CLK pins.
@@ -75,8 +67,24 @@ class KY040:
         Args:
             pin (Pin): the pin that triggered the interrupt.
         """
-        self._last_edge_status = self._read_status()
-        self._last_edge_ms = time.ticks_ms()
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._last_change_ms) < self._debounce_ms:
+            return
+
+        new_status = self._read_status()
+        if new_status == self._last_status:
+            return
+
+        transition = (self._last_status << 2) | new_status
+
+        if transition == self._TRANSITION_CW:
+            self._last_event = RotaryEvent.CW
+        elif transition == self._TRANSITION_CCW:
+            self._last_event = RotaryEvent.CCW
+        # any other transition value is a bounce/invalid step; ignored
+
+        self._last_status = new_status
+        self._last_change_ms = now
 
     def consume(self) -> RotaryEvent:
         """Return and clear the most recent rotary event.
@@ -84,38 +92,6 @@ class KY040:
         Returns:
             RotaryEvent: NONE, CW, or CCW.
         """
-        now = time.ticks_ms()
-
-        irq_state = disable_irq()
-        edge_status = self._last_edge_status
-        edge_ms = self._last_edge_ms
-        enable_irq(irq_state)
-
-        if (
-            edge_status != self._committed_status
-            and time.ticks_diff(now, edge_ms) >= self._debounce_ms
-        ):
-            old_pos = self._RING_POSITION[self._committed_status]
-            new_pos = self._RING_POSITION[edge_status]
-            delta = (new_pos - old_pos) % 4
-
-            if delta == 1:
-                self._accumulator += 1
-            elif delta == 3:
-                self._accumulator -= 1
-            # delta == 0 can't occur here (statuses differ); delta == 2
-            # means two quarter-steps were skipped, which is direction-
-            # ambiguous from a single jump, so it's left uncounted.
-
-            if self._accumulator >= self._STEPS_PER_DETENT:
-                self._pending_event = RotaryEvent.CW
-                self._accumulator = 0
-            elif self._accumulator <= -self._STEPS_PER_DETENT:
-                self._pending_event = RotaryEvent.CCW
-                self._accumulator = 0
-
-            self._committed_status = edge_status
-
-        event = self._pending_event
-        self._pending_event = RotaryEvent.NONE
+        event = self._last_event
+        self._last_event = RotaryEvent.NONE
         return event

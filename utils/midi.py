@@ -2,9 +2,8 @@
 midi.py
 
 MIDI message library for a MicroPython instance. Provides a `Message`
-class hierarchy, a `SystemRealtime` family, a `SysEx` type, and
-`MidiUsb`/`MidiUart` output classes sharing `send_message()` /
-`send_realtime()` / `send_sysex()` APIs.
+class hierarchy, a `SysEx` type, and `MidiUsb`/`MidiUart` output classes
+sharing a `send_message()` / `send_sysex()` API.
 
 `MidiUsb` requires `mpremote mip install usb-device-midi` on firmware
 with `usb.device` support. `MidiUart` requires only `machine`. Both are
@@ -291,19 +290,27 @@ class PitchBend(Message):
         return _PITCH_BEND
 
 
-class SystemRealtime:
+class SystemRealtime(Message):
     """Base class for single-byte MIDI system realtime messages."""
 
     _STATUS = None
+
+    def __init__(self, channel: int) -> None:
+        """
+        Args:
+            channel: Unused; kept for a consistent constructor signature
+                across all Message subclasses.
+
+        Raises:
+            ValueError: if `channel` is not in 0-15.
+        """
+        super().__init__(channel)
 
     def to_bytes(self) -> list:
         return [self._STATUS]
 
     def cin(self) -> int:
         return 0xF
-
-    def __repr__(self) -> str:
-        return "<%s bytes=%s>" % (self.__class__.__name__, list(self.to_bytes()))
 
 
 class Clock(SystemRealtime):
@@ -374,104 +381,11 @@ class SysEx:
 
 
 # ===========================================================================
-# Shared MIDI interface
-# ===========================================================================
-
-
-class MidiInterface:
-    """Base class for MIDI interface backends sharing a common API."""
-
-    def __init__(self) -> None:
-        """
-        Raises:
-            TypeError: if instantiated directly instead of via a subclass.
-        """
-        if type(self) is MidiInterface:
-            raise TypeError("MidiInterface cannot be instantiated directly")
-
-    def send_message(self, msg: Message) -> None:
-        """Send a fixed-size Message.
-
-        Args:
-            msg: A `Message` instance.
-
-        Raises:
-            TypeError: if `msg` is not a `Message` instance.
-        """
-        if not isinstance(msg, Message):
-            raise TypeError(
-                "send_message() expects a Message instance, got %r" % (msg,)
-            )
-        self._write_message(msg)
-
-    def send_realtime(self, msg: SystemRealtime) -> None:
-        """Send a single-byte MIDI system realtime message.
-
-        Args:
-            msg: A `SystemRealtime` instance.
-
-        Raises:
-            TypeError: if `msg` is not a `SystemRealtime` instance.
-        """
-        if not isinstance(msg, SystemRealtime):
-            raise TypeError(
-                "send_realtime() expects a SystemRealtime instance, got %r" % (msg,)
-            )
-        self._write_realtime(msg)
-
-    def send_sysex(self, msg: SysEx) -> None:
-        """Send a SysEx message.
-
-        Args:
-            msg: A `SysEx` instance.
-
-        Raises:
-            TypeError: if `msg` is not a `SysEx` instance.
-        """
-        if not isinstance(msg, SysEx):
-            raise TypeError("send_sysex() expects a SysEx instance, got %r" % (msg,))
-        self._write_sysex(msg)
-
-    def _write_message(self, msg: Message) -> None:
-        """Write a validated Message to the backend.
-
-        Args:
-            msg: A `Message` instance.
-
-        Raises:
-            NotImplementedError: always, unless overridden by a subclass.
-        """
-        raise NotImplementedError
-
-    def _write_realtime(self, msg: SystemRealtime) -> None:
-        """Write a validated SystemRealtime message to the backend.
-
-        Args:
-            msg: A `SystemRealtime` instance.
-
-        Raises:
-            NotImplementedError: always, unless overridden by a subclass.
-        """
-        raise NotImplementedError
-
-    def _write_sysex(self, msg: SysEx) -> None:
-        """Write a validated SysEx message to the backend.
-
-        Args:
-            msg: A `SysEx` instance.
-
-        Raises:
-            NotImplementedError: always, unless overridden by a subclass.
-        """
-        raise NotImplementedError
-
-
-# ===========================================================================
 # USB MIDI interface
 # ===========================================================================
 
 
-class MidiUsb(MidiInterface):
+class MidiUsb(MIDIInterface):
     """Self-initialising USB MIDI interface with Message/SysEx send helpers."""
 
     def __init__(
@@ -500,9 +414,7 @@ class MidiUsb(MidiInterface):
                 "firmware with usb.device support."
             )
 
-        super().__init__()
-
-        self._interface = MIDIInterface(rxlen=rxlen, txlen=txlen)
+        super().__init__(rxlen=rxlen, txlen=txlen)
 
         init_kwargs = {"builtin_driver": builtin_driver}
         if product_str is not None:
@@ -510,30 +422,35 @@ class MidiUsb(MidiInterface):
         if manufacturer_str is not None:
             init_kwargs["manufacturer_str"] = manufacturer_str
 
-        usb.device.get().init(self._interface, **init_kwargs)
+        usb.device.get().init(self, **init_kwargs)
 
-    def _write_message(self, msg: Message) -> None:
-        """Write a validated Message as a single USB-MIDI Event Packet.
+    def send_message(self, msg: Message) -> None:
+        """Send a fixed-size Message as a single USB-MIDI Event Packet.
 
         Args:
             msg: A `Message` instance.
+
+        Raises:
+            TypeError: if `msg` is not a `Message` instance.
         """
-        self._interface.send_event(msg.cin(), *msg.to_bytes())
+        if not isinstance(msg, Message):
+            raise TypeError(
+                "send_message() expects a Message instance, got %r" % (msg,)
+            )
+        self.send_event(msg.cin(), *msg.to_bytes())
 
-    def _write_realtime(self, msg: SystemRealtime) -> None:
-        """Write a validated SystemRealtime message as a USB-MIDI Event Packet.
-
-        Args:
-            msg: A `SystemRealtime` instance.
-        """
-        self._interface.send_event(msg.cin(), *msg.to_bytes())
-
-    def _write_sysex(self, msg: SysEx) -> None:
-        """Write a validated SysEx message, split into 3-byte USB-MIDI packets.
+    def send_sysex(self, msg: SysEx) -> None:
+        """Send a SysEx message, split into 3-byte USB-MIDI packets.
 
         Args:
             msg: A `SysEx` instance.
+
+        Raises:
+            TypeError: if `msg` is not a `SysEx` instance.
         """
+        if not isinstance(msg, SysEx):
+            raise TypeError("send_sysex() expects a SysEx instance, got %r" % (msg,))
+
         data: list = msg.to_bytes()
         chunk_count: int = (len(data) + 2) // 3
 
@@ -549,7 +466,7 @@ class MidiUsb(MidiInterface):
                 cin = 0x4
 
             b0, b1, b2 = (chunk + [0, 0, 0])[:3]  # zero-pad short chunks
-            self._interface.send_event(cin, b0, b1, b2)
+            self.send_event(cin, b0, b1, b2)
 
 
 # ===========================================================================
@@ -557,7 +474,7 @@ class MidiUsb(MidiInterface):
 # ===========================================================================
 
 
-class MidiUart(MidiInterface):
+class MidiUart:
     """Self-initialising serial MIDI interface, matching the MidiUsb API."""
 
     def __init__(
@@ -583,8 +500,6 @@ class MidiUart(MidiInterface):
                 "requires MicroPython's machine module."
             )
 
-        super().__init__()
-
         self._uart = UART(
             uart_id,
             baudrate=baudrate,
@@ -595,26 +510,30 @@ class MidiUart(MidiInterface):
             stop=1,
         )
 
-    def _write_message(self, msg: Message) -> None:
-        """Write a validated Message as raw MIDI bytes.
+    def send_message(self, msg: Message) -> None:
+        """Write a fixed-size Message as raw MIDI bytes.
 
         Args:
             msg: A `Message` instance.
+
+        Raises:
+            TypeError: if `msg` is not a `Message` instance.
         """
+        if not isinstance(msg, Message):
+            raise TypeError(
+                "send_message() expects a Message instance, got %r" % (msg,)
+            )
         self._uart.write(bytes(msg.to_bytes()))
 
-    def _write_realtime(self, msg: SystemRealtime) -> None:
-        """Write a validated SystemRealtime message as raw MIDI bytes.
-
-        Args:
-            msg: A `SystemRealtime` instance.
-        """
-        self._uart.write(bytes(msg.to_bytes()))
-
-    def _write_sysex(self, msg: SysEx) -> None:
-        """Write a validated SysEx message as raw MIDI bytes.
+    def send_sysex(self, msg: SysEx) -> None:
+        """Write a SysEx message as raw MIDI bytes.
 
         Args:
             msg: A `SysEx` instance.
+
+        Raises:
+            TypeError: if `msg` is not a `SysEx` instance.
         """
+        if not isinstance(msg, SysEx):
+            raise TypeError("send_sysex() expects a SysEx instance, got %r" % (msg,))
         self._uart.write(bytes(msg.to_bytes()))

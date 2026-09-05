@@ -315,7 +315,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             tuple: (start, length).
 
         Raises:
-            ValueError: if `subset_id` does not exist.
+            KeyError: if `subset_id` does not exist.
         """
         if subset_id is None:
             n: int = len(self)
@@ -323,10 +323,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             length: int = max(0, n - start)
             return start, length
 
-        try:
-            return self._subsets[subset_id]
-        except KeyError:
-            raise ValueError("unknown subset id: %r" % (subset_id,))
+        return self._subsets[subset_id]
 
     # ------------------------------------------------------------------
     # Basic pixel operations
@@ -361,7 +358,7 @@ class NeoPixelManager(neopixel.NeoPixel):
             int: the id this pattern is attached to.
 
         Raises:
-            ValueError: if `id` does not exist.
+            KeyError: if `id` does not exist.
         """
         start, length = self._resolve_range(id)
 
