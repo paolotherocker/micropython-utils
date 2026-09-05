@@ -16,25 +16,28 @@ class ButtonEvent:
 
     Attributes:
         NONE: No new event is available.
-        PRESSED: The button was just pressed.
-        SHORT_PRESS: The button was released before the long-press
+        PRESS: The button was just pressed.
+        SHORT_RELEASE: The button was released before the long-press
             threshold elapsed.
         LONG_PRESS: The button has been held for the configured
             long-press duration.
+        LONG_RELEASE: The button was released after a LONG_PRESS event
+            had already fired for this hold.
     """
 
     NONE = 0
-    PRESSED = 1
-    SHORT_PRESS = 2
+    PRESS = 1
+    SHORT_RELEASE = 2
     LONG_PRESS = 3
+    LONG_RELEASE = 4
 
 
 class _State:
     """Internal button state machine states (not part of the public API)."""
 
-    IDLE = 0  # button released, nothing in progress
+    IDLE = 0     # button released, nothing in progress
     PRESSED = 1  # button down, long-press threshold not yet reached
-    HELD = 2  # button down, long-press already fired this cycle
+    HELD = 2     # button down, long-press already fired this cycle
 
 
 class Button(Pin):
@@ -93,7 +96,8 @@ class Button(Pin):
         """Check for and consume the pending button event.
 
         Returns:
-            ButtonEvent: NONE, PRESSED, SHORT_PRESS, or LONG_PRESS.
+            ButtonEvent: NONE, PRESS, SHORT_RELEASE, LONG_PRESS, or
+            LONG_RELEASE.
         """
         now = time.ticks_ms()
 
@@ -103,11 +107,13 @@ class Button(Pin):
             if pressed and self._state == _State.IDLE:
                 self._state = _State.PRESSED
                 self._press_start = now
-                self._pending_event = ButtonEvent.PRESSED
+                self._pending_event = ButtonEvent.PRESS
 
             elif not pressed and self._state != _State.IDLE:
                 if self._state == _State.PRESSED:
-                    self._pending_event = ButtonEvent.SHORT_PRESS
+                    self._pending_event = ButtonEvent.SHORT_RELEASE
+                elif self._state == _State.HELD:
+                    self._pending_event = ButtonEvent.LONG_RELEASE
                 self._state = _State.IDLE
 
             elif pressed and self._state == _State.PRESSED:

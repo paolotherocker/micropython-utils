@@ -9,14 +9,13 @@ button = Button(BUTTON_PIN, Pin.PULL_UP)
 led = Pin(25, Pin.OUT)
 
 button_event = ButtonEvent.NONE
-state = False
 
 while True:
     button_event = button.consume()
 
-    if button.is_pressed() == True:
+    if button_event in (ButtonEvent.PRESS):
         led.on()
-    else:
+    elif button_event in (ButtonEvent.SHORT_RELEASE, ButtonEvent.LONG_RELEASE):
         led.off()
 
     if button_event != ButtonEvent.NONE:
