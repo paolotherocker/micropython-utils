@@ -86,7 +86,7 @@ def _clamp_channel(channel: int) -> int:
 
 
 class Message:
-    """Base class for fixed-size MIDI messages."""
+    """Base class for fixed-size MIDI messages. Not directly instantiable."""
 
     def __init__(self, channel: int) -> None:
         """
@@ -95,7 +95,11 @@ class Message:
 
         Raises:
             ValueError: if `channel` is not in 0-15.
+            TypeError: if `Message` is instantiated directly instead of
+                via a subclass.
         """
+        if type(self) is Message:
+            raise TypeError("Message is abstract; instantiate a subclass")
         self.channel: int = _clamp_channel(channel)
 
     def to_bytes(self) -> list:
@@ -121,7 +125,7 @@ class Message:
 class NoteOn(Message):
     """MIDI Note On message."""
 
-    def __init__(self, channel: int, note: int, velocity: int) -> None:
+    def __init__(self, channel: int, *, note: int, velocity: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -136,7 +140,10 @@ class NoteOn(Message):
         self.velocity: int = _clamp7(velocity, "velocity")
 
     def to_bytes(self) -> list:
-        return [(_NOTE_ON << 4) | self.channel, self.note, self.velocity]
+        channel = _clamp_channel(self.channel)
+        note = _clamp7(self.note, "note")
+        velocity = _clamp7(self.velocity, "velocity")
+        return [(_NOTE_ON << 4) | channel, note, velocity]
 
     def cin(self) -> int:
         return _NOTE_ON
@@ -145,7 +152,7 @@ class NoteOn(Message):
 class NoteOff(Message):
     """MIDI Note Off message."""
 
-    def __init__(self, channel: int, note: int, velocity: int) -> None:
+    def __init__(self, channel: int, *, note: int, velocity: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -160,7 +167,10 @@ class NoteOff(Message):
         self.velocity: int = _clamp7(velocity, "velocity")
 
     def to_bytes(self) -> list:
-        return [(_NOTE_OFF << 4) | self.channel, self.note, self.velocity]
+        channel = _clamp_channel(self.channel)
+        note = _clamp7(self.note, "note")
+        velocity = _clamp7(self.velocity, "velocity")
+        return [(_NOTE_OFF << 4) | channel, note, velocity]
 
     def cin(self) -> int:
         return _NOTE_OFF
@@ -169,7 +179,7 @@ class NoteOff(Message):
 class ControlChange(Message):
     """MIDI Control Change message."""
 
-    def __init__(self, channel: int, controller: int, value: int) -> None:
+    def __init__(self, channel: int, *, controller: int, value: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -185,7 +195,10 @@ class ControlChange(Message):
         self.value: int = _clamp7(value, "value")
 
     def to_bytes(self) -> list:
-        return [(_CONTROL_CHANGE << 4) | self.channel, self.controller, self.value]
+        channel = _clamp_channel(self.channel)
+        controller = _clamp7(self.controller, "controller")
+        value = _clamp7(self.value, "value")
+        return [(_CONTROL_CHANGE << 4) | channel, controller, value]
 
     def cin(self) -> int:
         return _CONTROL_CHANGE
@@ -194,7 +207,7 @@ class ControlChange(Message):
 class ProgramChange(Message):
     """MIDI Program Change message."""
 
-    def __init__(self, channel: int, program: int) -> None:
+    def __init__(self, channel: int, *, program: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -207,7 +220,9 @@ class ProgramChange(Message):
         self.program: int = _clamp7(program, "program")
 
     def to_bytes(self) -> list:
-        return [(_PROGRAM_CHANGE << 4) | self.channel, self.program]
+        channel = _clamp_channel(self.channel)
+        program = _clamp7(self.program, "program")
+        return [(_PROGRAM_CHANGE << 4) | channel, program]
 
     def cin(self) -> int:
         return _PROGRAM_CHANGE
@@ -216,7 +231,7 @@ class ProgramChange(Message):
 class ChannelAftertouch(Message):
     """MIDI channel pressure (monophonic aftertouch) message."""
 
-    def __init__(self, channel: int, pressure: int) -> None:
+    def __init__(self, channel: int, *, pressure: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -229,7 +244,9 @@ class ChannelAftertouch(Message):
         self.pressure: int = _clamp7(pressure, "pressure")
 
     def to_bytes(self) -> list:
-        return [(_CHANNEL_AFTERTOUCH << 4) | self.channel, self.pressure]
+        channel = _clamp_channel(self.channel)
+        pressure = _clamp7(self.pressure, "pressure")
+        return [(_CHANNEL_AFTERTOUCH << 4) | channel, pressure]
 
     def cin(self) -> int:
         return _CHANNEL_AFTERTOUCH
@@ -238,7 +255,7 @@ class ChannelAftertouch(Message):
 class PolyAftertouch(Message):
     """MIDI polyphonic key-pressure message."""
 
-    def __init__(self, channel: int, note: int, pressure: int) -> None:
+    def __init__(self, channel: int, *, note: int, pressure: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
@@ -254,7 +271,10 @@ class PolyAftertouch(Message):
         self.pressure: int = _clamp7(pressure, "pressure")
 
     def to_bytes(self) -> list:
-        return [(_POLY_AFTERTOUCH << 4) | self.channel, self.note, self.pressure]
+        channel = _clamp_channel(self.channel)
+        note = _clamp7(self.note, "note")
+        pressure = _clamp7(self.pressure, "pressure")
+        return [(_POLY_AFTERTOUCH << 4) | channel, note, pressure]
 
     def cin(self) -> int:
         return _POLY_AFTERTOUCH
@@ -263,11 +283,15 @@ class PolyAftertouch(Message):
 class PitchBend(Message):
     """MIDI 14-bit pitch bend message."""
 
-    def __init__(self, channel: int, value: int) -> None:
+    def __init__(self, channel: int, *, value: int) -> None:
         """
         Args:
             channel: Zero-based MIDI channel (0-15).
             value: Bend amount, -8192 to 8191. Zero is centre/no bend.
+                This is a signed, zero-centred value, not the raw
+                unsigned 14-bit wire value (0-16383, centre 8192) used
+                in some MIDI references; to convert from the unsigned
+                form subtract 8192 before passing it in here.
 
         Raises:
             ValueError: if `channel` is out of range, or `value` is not
@@ -279,9 +303,13 @@ class PitchBend(Message):
         self.value: int = value
 
     def to_bytes(self) -> list:
-        raw: int = self.value + 8192  # shift to unsigned 14-bit range
+        channel = _clamp_channel(self.channel)
+        value = self.value
+        if not -8192 <= value <= 8191:
+            raise ValueError("pitch bend value must be -8192..8191")
+        raw: int = value + 8192  # shift to unsigned 14-bit range
         return [
-            (_PITCH_BEND << 4) | self.channel,
+            (_PITCH_BEND << 4) | channel,
             raw & 0x7F,  # LSB
             (raw >> 7) & 0x7F,  # MSB
         ]
@@ -291,7 +319,8 @@ class PitchBend(Message):
 
 
 class SystemRealtime(Message):
-    """Base class for single-byte MIDI system realtime messages."""
+    """Base class for single-byte MIDI system realtime messages. Not
+    directly instantiable; use a concrete subclass such as `Clock`."""
 
     _STATUS = None
 
@@ -303,8 +332,16 @@ class SystemRealtime(Message):
 
         Raises:
             ValueError: if `channel` is not in 0-15.
+            TypeError: if `SystemRealtime` is instantiated directly
+                instead of via a subclass with a defined status byte.
         """
         super().__init__(channel)
+        if self._STATUS is None:
+            raise TypeError(
+                "SystemRealtime is abstract; instantiate a subclass "
+                "(Clock, Start, Continue, Stop, ActiveSensing, "
+                "SystemReset)"
+            )
 
     def to_bytes(self) -> list:
         return [self._STATUS]
@@ -368,12 +405,18 @@ class SysEx:
         Raises:
             ValueError: if any byte in `data` is not in 0-127.
         """
+        # The 0-127 range check below also rejects a caller accidentally
+        # including the 0xF0/0xF7 start/end bytes in `data`, since both
+        # values are outside that range.
         self.data: list = list(data)
         for byte in self.data:
             if not 0 <= byte <= 127:
                 raise ValueError("SysEx payload bytes must be 0-127")
 
     def to_bytes(self) -> list:
+        for byte in self.data:
+            if not 0 <= byte <= 127:
+                raise ValueError("SysEx payload bytes must be 0-127")
         return [_SYSEX_START] + self.data + [_SYSEX_END]
 
     def __repr__(self) -> str:
@@ -392,8 +435,8 @@ class MidiUsb(MIDIInterface):
         self,
         product_str: str = None,
         manufacturer_str: str = None,
-        rxlen: int = 16,
-        txlen: int = 16,
+        rxlen: int = 64,
+        txlen: int = 64,
         builtin_driver: bool = True,
     ) -> None:
         """
@@ -401,7 +444,13 @@ class MidiUsb(MIDIInterface):
             product_str: USB product string shown by the host.
             manufacturer_str: USB manufacturer string.
             rxlen: Receive buffer size in bytes.
-            txlen: Transmit buffer size in bytes.
+            txlen: Transmit buffer size in bytes. Each queued MIDI event
+                (Message or SysEx chunk) consumes 4 bytes here, so a
+                SysEx message needs roughly
+                `4 * ceil((len(payload) + 2) / 3)` bytes of headroom in
+                a single `send_sysex()` call; raise `txlen` if you send
+                long SysEx dumps, or lower it if you only send small
+                fixed-size messages and want to save RAM.
             builtin_driver: Passed to `usb.device.get().init()`.
 
         Raises:

@@ -14,10 +14,10 @@ VELOCITY = 100
 midi_out = MidiUsb(product_str="Pico MIDI Controller", manufacturer_str="Paolo")
 
 while True:
-    midi_out.send_message(NoteOn(CHANNEL, NOTE, VELOCITY))
+    midi_out.send_message(NoteOn(CHANNEL, note=NOTE, velocity=VELOCITY))
     print("note on")
     time.sleep(0.5)
 
-    midi_out.send_message(NoteOff(CHANNEL, NOTE, 0))
+    midi_out.send_message(NoteOff(CHANNEL, note=NOTE, velocity=0))
     print("note off")
     time.sleep(0.5)
