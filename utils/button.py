@@ -1,10 +1,11 @@
 """Debounced push-button driver with short/long press detection.
 
-This module provides a `Button` class for MicroPython that *is* a
-`machine.Pin` (via subclassing) configured as a digital input, using an
-interrupt handler to detect edges, debounce noisy transitions, and
-classify presses as either short or long based on configurable timing
-thresholds.
+Provides a `Button` class for MicroPython that wraps a `machine.Pin`
+configured as a digital input, using an interrupt handler to detect
+edges, debounce noisy transitions, and classify presses as short or
+long.
+
+See ../examples/button/main.py for usage.
 """
 
 from machine import Pin
@@ -12,23 +13,21 @@ import time
 
 
 class ButtonEvent:
-    """Enumeration of button events returned by `Button.consume`.
+    """Events returned by `Button.consume`.
 
     Attributes:
-    - NONE: No new event is available.
-    - PRESSED: The button was just pressed (rising edge of the logical
-      "pressed" state). Fires immediately on press, independently of
-      whether the eventual release is classified as short or long.
-    - SHORT_PRESS: The button was pressed and released before the
-      long-press threshold elapsed.
-    - LONG_PRESS: The button has been held down for at least the
-      configured long-press duration.
+        NONE: No new event.
+        PRESS: The button was just pressed.
+        SHORT_RELEASE: Released before the long-press threshold.
+        LONG_PRESS: Held for the configured long-press duration.
+        LONG_RELEASE: Released after a LONG_PRESS had fired.
     """
 
     NONE = 0
-    PRESSED = 1
-    SHORT_PRESS = 2
+    PRESS = 1
+    SHORT_RELEASE = 2
     LONG_PRESS = 3
+    LONG_RELEASE = 4
 
 
 class _State:
@@ -39,26 +38,12 @@ class _State:
     HELD = 2     # button down, long-press already fired this cycle
 
 
-class Button(Pin):
+class Button:
     """Debounced button with press, short-press and long-press detection.
 
-    `Button` is a `machine.Pin` subclass: instead of wrapping a pin
-    object, it *is* a pin, always configured as a digital input
-    (`Pin.IN`). Only `id` and `pull` need to be supplied; the button
-    is active low (pressed == 0).
-
-    Debouncing is level-confirmed rather than edge-spacing-based: the
-    pin-change interrupt only restarts a debounce timer (it never
-    decides on its own that a transition is "real"). `consume` commits
-    a state transition only once the pin has been electrically stable
-    for `debounce_ms`, and always re-checks `is_pressed()` as ground
-    truth at that point. This means the internal state machine
-    (`_State.IDLE` -> `_State.PRESSED` -> `_State.HELD` -> `_State.IDLE`)
-    can never get stuck out of sync with the physical pin, even if a
-    genuine press/release happens to occur close together in time.
-
-    Call `consume` periodically (e.g. from a main loop) to read and
-    clear the pending event.
+    Wraps a `machine.Pin` configured as a digital input (`Pin.IN`).
+    `pull=Pin.PULL_DOWN` selects active-high operation; any other
+    `pull` value selects active-low operation.
     """
 
     def __init__(
@@ -72,84 +57,84 @@ class Button(Pin):
         """
         Args:
             id: Pin identifier, as accepted by `machine.Pin`.
-            pull: Pull resistor configuration (e.g. `Pin.PULL_UP`,
-                `Pin.PULL_DOWN`, or `None`). The button is always
-                initialised as an input (`Pin.IN`), active low
-                (pressed == 0).
-            debounce_ms: Minimum time, in milliseconds, that the pin
-                must remain electrically stable (no further edges)
-                before a level change is trusted and acted on.
-            long_press_ms: Minimum hold duration, in milliseconds,
-                required for a press to be classified as a long press.
+            pull: `Pin.PULL_UP`, `Pin.PULL_DOWN`, or `None`.
+            debounce_ms: Stable time, in milliseconds, required before
+                a level change is acted on. Must be positive.
+            long_press_ms: Minimum hold duration, in milliseconds, for
+                a press to be classified as a long press. Must be
+                positive.
+
+        Raises:
+            ValueError: If `pull`, `debounce_ms`, or `long_press_ms`
+                is not a valid value.
         """
-        super().__init__(id, Pin.IN, pull)
-        self.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, handler=self._on_irq)
+        if pull not in (Pin.PULL_UP, Pin.PULL_DOWN, None):
+            raise ValueError("pull must be Pin.PULL_UP, Pin.PULL_DOWN, or None")
+        if debounce_ms <= 0:
+            raise ValueError("debounce_ms must be positive")
+        if long_press_ms <= 0:
+            raise ValueError("long_press_ms must be positive")
+
+        self._pin = Pin(id, Pin.IN, pull)
         self._debounce_ms = debounce_ms
         self._long_press_ms = long_press_ms
+        self._active_level = 1 if pull == Pin.PULL_DOWN else 0
 
         self._state = _State.IDLE
-        self._last_edge = time.ticks_ms()   # restarts on every edge (debounce timer)
-        self._press_start = 0               # for long-press timing
+        self._last_edge = time.ticks_ms()  # restarts on every edge (debounce timer)
+        self._last_level = self._pin.value()  # pin level captured at last edge
+        self._press_start = 0  # for long-press timing
         self._pending_event = ButtonEvent.NONE
+
+        self._pin.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, handler=self._on_irq)
 
     def _on_irq(self, pin):
         """Interrupt handler invoked on rising/falling edges of the pin.
 
-        Deliberately does nothing but restart the debounce timer. It
-        makes no assumption about whether this edge is real or bounce;
-        `consume` is the only place that commits a state transition,
-        and only once the pin has settled.
+        Captures the edge time and pin level. Each is a single atomic
+        attribute write, so `consume` never observes a torn update.
+
+        Args:
+            pin: the pin that triggered the interrupt.
         """
+        self._last_level = pin.value()
         self._last_edge = time.ticks_ms()
 
     def is_pressed(self) -> bool:
-        """Return whether the button is currently held down.
+        """Return whether the button is currently held down (debounced).
 
         Returns:
-            True if the pin reads low (button pressed), False otherwise.
+            bool: True if the button is currently pressed.
         """
-        return self.value() == 0
+        return self._state != _State.IDLE
 
     def consume(self) -> ButtonEvent:
         """Check for and consume the pending button event.
 
-        Should be polled periodically. A level change is only trusted
-        once the pin has been stable for `debounce_ms` since the last
-        edge activity; at that point the current `is_pressed()` value
-        is used as ground truth to (re)synchronise the state machine,
-        which prevents the button from ever getting stuck out of sync
-        with reality, even if a fast genuine press/release was
-        initially mistaken for bounce.
-
-        A press yields `ButtonEvent.PRESSED`. Being held past the
-        configured long-press duration yields `ButtonEvent.LONG_PRESS`.
-        Otherwise, releasing before that threshold yields
-        `ButtonEvent.SHORT_PRESS`. The event is cleared once read; if
-        it wasn't polled before a new event occurred, the older event
-        is simply overwritten and lost. If nothing is pending, returns
-        `ButtonEvent.NONE`.
-
         Returns:
-            The detected `ButtonEvent` (NONE, PRESSED, SHORT_PRESS, or
-            LONG_PRESS).
+            ButtonEvent: NONE, PRESS, SHORT_RELEASE, LONG_PRESS, or
+            LONG_RELEASE.
         """
         now = time.ticks_ms()
+        last_edge = self._last_edge  # snapshot: avoid a second volatile read
 
-        if time.ticks_diff(now, self._last_edge) >= self._debounce_ms:
-            pressed = self.is_pressed()
+        if time.ticks_diff(now, last_edge) >= self._debounce_ms:
+            pressed = self._last_level == self._active_level
 
             if pressed and self._state == _State.IDLE:
                 self._state = _State.PRESSED
                 self._press_start = now
-                self._pending_event = ButtonEvent.PRESSED
+                self._pending_event = ButtonEvent.PRESS
 
             elif not pressed and self._state != _State.IDLE:
                 if self._state == _State.PRESSED:
-                    self._pending_event = ButtonEvent.SHORT_PRESS
+                    self._pending_event = ButtonEvent.SHORT_RELEASE
+                elif self._state == _State.HELD:
+                    self._pending_event = ButtonEvent.LONG_RELEASE
                 self._state = _State.IDLE
 
             elif pressed and self._state == _State.PRESSED:
-                if time.ticks_diff(now, self._press_start) > self._long_press_ms:
+                if time.ticks_diff(now, self._press_start) >= self._long_press_ms:
                     self._state = _State.HELD
                     self._pending_event = ButtonEvent.LONG_PRESS
 
