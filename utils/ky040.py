@@ -11,7 +11,7 @@ direction. Type enforcement is done manually since MicroPython has no
 See ../examples/ky040/main.py for usage
 """
 
-from machine import Pin
+from machine import Pin, disable_irq, enable_irq
 import utime as time
 
 
@@ -19,16 +19,12 @@ class RotaryEvent:
     """Namespace of rotary direction constants."""
 
     NONE = 0  # no event since the last consume()
-    CW = 1  # clockwise step
-    CCW = 2  # counter-clockwise step
+    CW = 1    # clockwise step
+    CCW = 2   # counter-clockwise step
 
 
 class KY040:
     """Quadrature-transition based KY-040 rotary encoder reader."""
-
-    # Transition table values, expressed as (last_status << 2) | new_status
-    _TRANSITION_CW = 0b1110
-    _TRANSITION_CCW = 0b1101
 
     def __init__(
         self,
@@ -43,14 +39,31 @@ class KY040:
             clk_pin (int): CLK pin ID number.
             pull (int, optional): Pin.PULL_UP, Pin.PULL_DOWN, or None.
             debounce_ms (int, optional): Debounce time in ms.
+
+        Raises:
+            ValueError: if dt_pin and clk_pin are the same pin, or if
+                debounce_ms is negative.
         """
+        if dt_pin == clk_pin:
+            raise ValueError("dt_pin and clk_pin must be different pins")
+        if debounce_ms < 0:
+            raise ValueError("debounce_ms must be >= 0")
+
         self._dt_pin = Pin(dt_pin, Pin.IN, pull)
         self._clk_pin = Pin(clk_pin, Pin.IN, pull)
         self._debounce_ms = debounce_ms
 
         self._last_status = self._read_status()
-        self._last_event = RotaryEvent.NONE
         self._last_change_ms = time.ticks_ms()
+        self._position_delta = 0
+
+        # Rest state captured here so the transition table adapts to
+        # whichever pull configuration is wired, instead of assuming
+        # both pins idle high. CW is defined as "CLK bit flips first
+        # out of rest"; CCW as "DT bit flips first out of rest".
+        rest = self._last_status
+        self._transition_cw = (rest << 2) | (rest ^ 0b01)
+        self._transition_ccw = (rest << 2) | (rest ^ 0b10)
 
         self._dt_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
         self._clk_pin.irq(self._on_pin_change, Pin.IRQ_RISING | Pin.IRQ_FALLING)
@@ -64,34 +77,55 @@ class KY040:
     def _on_pin_change(self, pin: Pin) -> None:
         """IRQ handler for both DT and CLK pins.
 
+        Runs in hard-IRQ context (MicroPython default for Pin.irq()):
+        no heap allocation is permitted here. Keep this body limited
+        to integer arithmetic and attribute assignment; anything that
+        allocates (list/dict/str construction, etc.) will raise inside
+        the ISR and be dropped rather than propagated.
+
         Args:
             pin (Pin): the pin that triggered the interrupt.
         """
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_change_ms) < self._debounce_ms:
-            return
-
         new_status = self._read_status()
         if new_status == self._last_status:
             return
 
-        transition = (self._last_status << 2) | new_status
+        now = time.ticks_ms()
+        in_debounce = time.ticks_diff(now, self._last_change_ms) < self._debounce_ms
 
-        if transition == self._TRANSITION_CW:
-            self._last_event = RotaryEvent.CW
-        elif transition == self._TRANSITION_CCW:
-            self._last_event = RotaryEvent.CCW
+        # Resync tracked state on every real edge, even a debounced
+        # one, so a later accepted edge is classified against the
+        # true prior state rather than a stale one.
+        transition = (self._last_status << 2) | new_status
+        self._last_status = new_status
+
+        if in_debounce:
+            return
+
+        if transition == self._transition_cw:
+            self._position_delta += 1
+        elif transition == self._transition_ccw:
+            self._position_delta -= 1
         # any other transition value is a bounce/invalid step; ignored
 
-        self._last_status = new_status
         self._last_change_ms = now
 
-    def consume(self) -> RotaryEvent:
-        """Return and clear the most recent rotary event.
+    def consume(self) -> int:
+        """Return and clear the net rotary event since the last call.
+
+        Multiple same-direction steps between calls collapse into a
+        single event; opposite-direction steps can cancel to NONE.
 
         Returns:
             RotaryEvent: NONE, CW, or CCW.
         """
-        event = self._last_event
-        self._last_event = RotaryEvent.NONE
-        return event
+        state = disable_irq()
+        delta = self._position_delta
+        self._position_delta = 0
+        enable_irq(state)
+
+        if delta > 0:
+            return RotaryEvent.CW
+        if delta < 0:
+            return RotaryEvent.CCW
+        return RotaryEvent.NONE
