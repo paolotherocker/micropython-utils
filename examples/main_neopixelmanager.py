@@ -35,7 +35,8 @@ print("Pulsing... press Ctrl+C to stop")
 
 try:
     while True:
-        np.poll()  # recompute pulse colours and push to the strip
+        np.update()  # recompute pattern colours into the pixel buffer
+        np.write()  # push the buffer to the strip
         time.sleep_ms(5)
 except KeyboardInterrupt:
     pass

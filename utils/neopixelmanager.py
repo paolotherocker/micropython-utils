@@ -291,6 +291,9 @@ class NeoPixelManager:
 
     Wraps a `neopixel.NeoPixel` instance internally (composition, not
     inheritance) and forwards pixel indexing and `write()` to it.
+    Call `update()` each frame to recompute animated patterns, then
+    `write()` to push the buffer to the physical strip; the two are
+    separate so callers control exactly when hardware I/O happens.
     """
 
     def __init__(self, pin_id: int, n: int, bpp: int = 3, timing: int = 1) -> None:
@@ -495,7 +498,10 @@ class NeoPixelManager:
             self[i] = pattern.get_pixel_color(offset, length, elapsed_ms, self.bpp)
 
     def update(self) -> None:
-        """Recompute every animated pattern's colours from elapsed time."""
+        """Recompute every animated pattern's colours into the pixel buffer.
+
+        Does not push to the strip; call write() afterwards to display it.
+        """
         now: int = time.ticks_ms()
 
         for entry in self._patterns.values():
@@ -504,8 +510,3 @@ class NeoPixelManager:
                 continue
             elapsed: int = time.ticks_diff(now, entry["t0"])
             self._render(entry, elapsed)
-
-    def poll(self) -> None:
-        """Recompute animated patterns and push the result to the strip."""
-        self.update()
-        self.write()
